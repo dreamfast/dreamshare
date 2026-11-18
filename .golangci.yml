@@ -1,0 +1,55 @@
+# Explicit enable list, no blanket exclusions. Anything excluded later gets a
+# comment here saying why, next to the exclusion.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - asciicheck
+    - bodyclose
+    - contextcheck
+    - depguard
+    - durationcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gosec
+    - misspell
+    - nilerr
+    - noctx
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - unparam
+    - unused
+    - usestdlibvars
+  settings:
+    depguard:
+      rules:
+        no-subprocess:
+          deny:
+            - pkg: os/exec
+              desc: the binary never shells out, do not start now
+        no-mathrand:
+          # capability tokens are minted outside internal/crypto too, so the
+          # ban is repo wide
+          deny:
+            - pkg: math/rand
+              desc: keys and tokens come from crypto/rand, never math/rand
+    exhaustive:
+      # a new status value must force every switch to be looked at
+      default-signifies-exhaustive: false
+    misspell:
+      locale: UK
+      # note: the api route token finalize lives in string literals, which
+      # misspell does not check. prose and comments spell it finalise.
+    gosec:
+      # nothing excluded. A future exclude needs a why, right here.
+      excludes: []
+  exclusions:
+    rules:
+      # tests assert status codes and read bodies through the rig helper,
+      # bodyclose cannot see the helper's cleanup registration
+      - path: _test\.go
+        linters:
+          - bodyclose

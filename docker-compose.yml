@@ -1,0 +1,35 @@
+# Local testing: docker compose up --build
+# The app answers on http://localhost:8080
+#
+# For production run the app behind your own reverse proxy: set BIND_HOST
+# in .env to the interface that should expose the container, loopback by
+# default so a fresh install is never accidentally public. Proxy header
+# requirements are documented in the Caddyfile at the repo root.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # the app always binds the container's own interface, the host
+      # exposure is controlled entirely by the ports mapping below
+      LISTEN_ON: ":8080"
+    read_only: true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=64m
+    volumes:
+      # the container user is uid 65532, a fresh ./data needs
+      # chown 65532:65532 once on the host or sqlite cannot create its file
+      - ./data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    ports:
+      # host side comes from .env
+      - "${BIND_HOST:-127.0.0.1}:${BIND_PORT:-8080}:8080"
+
+# bind mount ./data is used for the sqlite store, named volumes arrive
+# root-owned and the nonroot user cannot write to them

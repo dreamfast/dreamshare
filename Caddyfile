@@ -1,0 +1,8 @@
+# Reference config for a reverse proxy running on another host in front
+# of this app. Replace the domain and the upstream address. TRUSTED_PROXIES
+# on the app side must include the proxy's source address so forwarded
+# headers are honoured, anything else is ignored.
+
+share.example.com {
+	reverse_proxy 10.0.0.9:8099
+}

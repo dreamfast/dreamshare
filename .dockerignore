@@ -1,0 +1,8 @@
+# Secrets and local databases never enter the image
+.env
+.env.*
+.git/
+.pi/
+bin/
+data/
+web/node_modules/

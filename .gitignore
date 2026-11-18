@@ -1,0 +1,34 @@
+# Secrets never live here, not even for a moment.
+.env
+.env.*
+!.env.example
+
+# local databases and uploads
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# build output and tooling
+bin/
+dist/
+coverage.out
+
+# spa
+web/node_modules/
+
+# built spa, copied at build time, dist artifacts are not source
+internal/webdist/dist/
+web/test-results/
+
+# planning and private tooling stay out of the published repo
+PLAN.md
+AGENTS.md
+temp.md
+docs/
+.pi/
+.llmdev
+stitch_dreamshare_secure_file_sharing/
+
+# the built spa lands here at build time, only the placeholder is source
+!internal/webdist/dist/.keep
