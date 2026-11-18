@@ -115,6 +115,17 @@ func (s *Store) CompleteUpload(_ context.Context, _, uploadID string, parts []b2
 	if !ok {
 		return b2.Completed{}, b2.ErrNotFound
 	}
+	// model the real invalid part refusal: every presented etag must
+	// belong to this upload. the api once minted two mpus for one file
+	// under a first part race and the parts scattered across them, a fake
+	// that blessed any etag hid the bug
+	for _, p := range parts {
+		stored, ok := u.parts[p.Number]
+		if !ok || stored.ETag != p.ETag {
+			return b2.Completed{}, fmt.Errorf(
+				"invalid part %d: not uploaded to this upload or etag mismatch", p.Number)
+		}
+	}
 	var buf bytes.Buffer
 	var nums []int
 	for n := range u.parts {

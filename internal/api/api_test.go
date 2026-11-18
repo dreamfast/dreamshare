@@ -439,10 +439,12 @@ func TestManagerGetNeverRevokes(t *testing.T) {
 	if revoked.StatusCode != http.StatusOK {
 		t.Fatalf("manager revoke: %d", revoked.StatusCode)
 	}
+	// the version wipe runs async after the status flips, so the poll
+	// waits for the objects to actually disappear, not just the flag
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		sh, _ = rg.store.GetShare(t.Context(), shareID)
-		if sh.Status == "revoked" {
+		if sh.Status == "revoked" && len(rg.objects.Keys()) == 0 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)

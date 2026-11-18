@@ -191,6 +191,28 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
+
+	// multipart uploads are minted here, before the first part request.
+	// minting lazily at the first part raced when two parts arrived
+	// together: both saw an empty upload id, both created their own mpu,
+	// parts scattered across the two and complete then failed with
+	// invalid part against whichever id survived
+	for _, f := range ns.Files {
+		if f.ExpectedParts < 2 {
+			continue
+		}
+		uploadID, cerr := s.objects.CreateUpload(r.Context(), f.ObjectKey)
+		if cerr != nil {
+			s.log.Error("create upload", "err", cerr)
+			writeError(w, http.StatusBadGateway, "storage")
+			return
+		}
+		if uerr := s.store.SetUploadID(r.Context(), f.SessionID, uploadID); uerr != nil {
+			s.log.Error("save upload id", "err", uerr)
+			writeError(w, http.StatusInternalServerError, "internal")
+			return
+		}
+	}
 	if err := s.store.InsertEvent(r.Context(), shareID, "created", ip, "", r.UserAgent(), total); err != nil {
 		s.log.Error("event", "err", err)
 	}
