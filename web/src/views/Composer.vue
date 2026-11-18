@@ -267,9 +267,12 @@ async function submit() {
       const prefix = await freshNoncePrefix()
       const lastNumber = parts[parts.length - 1]?.number ?? 1
 
-      // two parts in flight, the look ahead tokens from each response feed
-      // the pool
-      const tokenPool: string[] = [...session.first_tokens]
+      // two parts in flight. tokens are positional, each one is the hmac
+      // of its own part number, so they are tracked per part: a flat
+      // queue desynced on the look ahead refill and handed a used token
+      // to a later part, which the server rightly refused
+      const tokenMap = new Map<number, string>()
+      session.first_tokens.forEach((t, i) => tokenMap.set(i + 1, t))
       let nextPart = 1
       let firstError: unknown = null
       const send = async (partNumber: number, partToken: string): Promise<void> => {
@@ -296,15 +299,14 @@ async function submit() {
           digest,
           partToken,
         )
-        tokenPool.push(...(resp.next_tokens ?? []))
+        ;(resp.next_tokens ?? []).forEach((t, i) => tokenMap.set(partNumber + 1 + i, t))
         progress.value.done++
       }
-      while (firstError === null && (nextPart <= parts.length || tokenPool.length > 0)) {
+      while (firstError === null && nextPart <= parts.length) {
         const inFlight: Array<Promise<void>> = []
-        while (nextPart <= parts.length && tokenPool.length > 0 && inFlight.length < 2) {
+        while (nextPart <= parts.length && tokenMap.has(nextPart) && inFlight.length < 2) {
           const n = nextPart++
-          const tok = tokenPool.shift()!
-          inFlight.push(send(n, tok).catch((e) => (firstError ??= e)))
+          inFlight.push(send(n, tokenMap.get(n)!).catch((e) => (firstError ??= e)))
         }
         if (inFlight.length === 0) break
         await Promise.race(inFlight)

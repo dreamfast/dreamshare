@@ -16,6 +16,12 @@ export default defineConfig({
       LISTEN_ON: '127.0.0.1:8901',
       SQLITE_PATH: '/tmp/dreamshare-e2e.db',
       TURNSTILE_MODE: 'disabled',
+      // six mib chunks so the journey crosses the three token look ahead
+      // window with five small parts instead of two big ones. a part must
+      // be whole one mib frames and at least five million bytes, so the
+      // smallest legal chunk is five frames, 5242880
+      CHUNK_MIN_BYTES: '5242880',
+      CHUNK_MAX_BYTES: '6291456',
       B2_ENDPOINT: 'http://localhost:9000',
       B2_REGION: 'us-west-002',
       B2_BUCKET: 'dreamshare',

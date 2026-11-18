@@ -84,22 +84,21 @@ test('upload to wipe', async ({ page, browser }) => {
   await ctx.close()
 })
 
-// crosses the 32 MiB chunk boundary at an exact multiple, the case where
-// size arithmetic and the client part plan must agree, multipart with two
-// full parts
+// five parts at the small e2e chunk size: an exact multiple of the chunk
+// and one part beyond the three token look ahead window, the refill that
+// once handed a reused token to a later part and 403ed the upload
 test('multipart across the exact chunk multiple', async ({ page, browser }) => {
   watch(page, 'mp-send')
   await page.goto('/')
   await page.getByRole('button', { name: 'New share' }).click()
   await page.getByLabel('title').fill('multipart exact multiple')
 
-  // playwright caps setInputFiles buffers at 50 MB, write the payload to a
-  // temp file and pass its path
+  // five exact chunks of the six mib e2e part size, 30 MB total
   const mib = 1024 * 1024
   const bigPath = '/tmp/dreamshare-e2e-big.bin'
   const fh = openSync(bigPath, 'w')
   const filler = Buffer.alloc(mib, 7)
-  for (let i = 0; i < 64; i++) writeSync(fh, filler)
+  for (let i = 0; i < 30; i++) writeSync(fh, filler)
   closeSync(fh)
   await page.locator('input[type=file]').setInputFiles(bigPath)
 
