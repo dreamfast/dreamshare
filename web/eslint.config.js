@@ -39,9 +39,15 @@ export default tseslint.config(
     // the two sanctioned html sinks: the sanitised markdown output in the
     // share view and the locally generated qr svg in the uploaded view.
     // Both are named to keep the ignore pattern tight.
-    files: ['src/views/Share.vue', 'src/views/Uploaded.vue', 'src/views/Terms.vue', 'src/views/Privacy.vue'],
+    files: [
+      'src/views/Share.vue',
+      'src/views/Uploaded.vue',
+      'src/views/Terms.vue',
+      'src/views/Privacy.vue',
+      'src/views/Composer.vue',
+    ],
     rules: {
-      'vue/no-v-html': ['error', { ignorePattern: '^(bodyHtml|qrSvg|legalHtml)$' }],
+      'vue/no-v-html': ['error', { ignorePattern: '^(bodyHtml|qrSvg|legalHtml|msgPreviewHtml)$' }],
     },
   },
   {

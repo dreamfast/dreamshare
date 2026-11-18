@@ -16,6 +16,7 @@ import { planParts, sealPart, startingIndex, freshNoncePrefix, ciphertextSize } 
 import { generateMasterKey, encodeFragmentKey } from '../crypto/frame'
 import { sealManifest, toB64, type ManifestFile } from '../lib/manifest'
 import { saveMineRecord } from '../lib/mine'
+import { renderBody } from '../lib/markdown'
 import { loadTurnstile, renderWidget, type TurnstileHandle } from '../lib/turnstile'
 
 const route = useRoute()
@@ -35,10 +36,12 @@ const progress = ref({ done: 0, total: 0 })
 const dragOver = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const titleInput = ref<HTMLInputElement | null>(null)
+const msgInput = ref<HTMLTextAreaElement | null>(null)
 
 // the challenge widget, only mounted when the server enforces it
 const turnstileBox = ref<HTMLElement | null>(null)
 const turnstileToken = ref('')
+const msgMode = ref<'write' | 'preview'>('write')
 let widget: TurnstileHandle | null = null
 
 onMounted(async () => {
@@ -56,6 +59,12 @@ watch(open, (v) => {
 
 // declared before the immediate watch below reads them, a later
 // declaration is a temporal dead zone crash on every mount
+// the preview renders through the exact sanitised pipeline the recipient
+// page uses, what you see is what they get
+const msgPreviewHtml = computed(() =>
+  body.value.trim() === '' ? '<p class="msg-empty">Nothing to preview yet.</p>' : renderBody(body.value),
+)
+
 const turnstileEnforced = computed(() => info.value?.turnstile.enforced ?? false)
 const turnstileReady = computed(() => !turnstileEnforced.value || turnstileToken.value !== '')
 
@@ -84,6 +93,59 @@ watch(
   },
   { immediate: true },
 )
+
+// markdown toolbar, plain selection edits so nothing here needs a library
+function applySel(next: string, selStart: number, selEnd: number) {
+  body.value = next
+  requestAnimationFrame(() => {
+    msgInput.value?.focus()
+    msgInput.value?.setSelectionRange(selStart, selEnd)
+  })
+}
+
+function wrapSel(marker: string) {
+  const el = msgInput.value
+  if (!el) return
+  const { selectionStart: a, selectionEnd: b } = el
+  const text = body.value
+  const inner = text.slice(a, b)
+  const already = text.slice(a - marker.length, a) === marker && text.slice(b, b + marker.length) === marker
+  if (already) {
+    const next = text.slice(0, a - marker.length) + inner + text.slice(b + marker.length)
+    applySel(next, a - marker.length, b - marker.length)
+    return
+  }
+  const next = text.slice(0, a) + marker + inner + marker + text.slice(b)
+  applySel(next, a + marker.length, b + marker.length)
+}
+
+function insertLink() {
+  const el = msgInput.value
+  if (!el) return
+  const { selectionStart: a, selectionEnd: b } = el
+  const text = body.value
+  const label = text.slice(a, b) || 'link text'
+  const snippet = `[${label}](https://)`
+  const next = text.slice(0, a) + snippet + text.slice(b)
+  // drop the caret into the url, the visible part is already sensible
+  applySel(next, a + snippet.length - 8, a + snippet.length - 1)
+}
+
+function makeList() {
+  const el = msgInput.value
+  if (!el) return
+  const { selectionStart: a, selectionEnd: b } = el
+  const text = body.value
+  const lineStart = text.lastIndexOf('\n', a - 1) + 1
+  const lineEndRaw = text.indexOf('\n', b)
+  const lineEnd = lineEndRaw === -1 ? text.length : lineEndRaw
+  const block = text.slice(lineStart, lineEnd)
+  const lines = block.split('\n')
+  const allBulleted = lines.every((l) => l.startsWith('- '))
+  const toggled = lines.map((l) => (allBulleted ? l.slice(2) : '- ' + l)).join('\n')
+  const next = text.slice(0, lineStart) + toggled + text.slice(lineEnd)
+  applySel(next, lineStart, lineStart + toggled.length)
+}
 
 function toggle() {
   if (busy.value) return
@@ -323,12 +385,6 @@ async function submit() {
 
       <!-- the open state: the same element grown into the two column card -->
       <div v-if="open" class="form">
-        <button type="button" class="close" aria-label="Close" @click="toggle()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <path d="M6 6l12 12M18 6L6 18" />
-          </svg>
-        </button>
-
         <header class="form-head">
           <h2>Share something</h2>
           <p class="form-sub">Files are encrypted in your browser before they are sent.</p>
@@ -359,7 +415,11 @@ async function submit() {
                   <path d="m16 16-4-4-4 4" />
                 </svg>
               </span>
-              <p class="drop-title">Drop files here</p>
+              <p class="drop-title">
+                Drop files here
+                <span class="opt">optional</span>
+              </p>
+              <p class="drop-sub">Send files, a message, or both.</p>
               <button type="button" class="browse" @click="fileInput?.click()">or browse</button>
               <input
                 ref="fileInput"
@@ -430,10 +490,110 @@ async function submit() {
               <input ref="titleInput" v-model="title" maxlength="200" placeholder="What is this?" />
             </label>
 
-            <label class="field">
-              <span class="field-label">Message <span class="opt">optional, markdown</span></span>
-              <textarea v-model="body" rows="4" placeholder="A note for the recipient"></textarea>
-            </label>
+            <div class="field">
+              <div class="field-label-row">
+                <label class="field-label" for="share-message">
+                  Message
+                  <span class="opt">optional, markdown</span>
+                </label>
+                <span class="tabs" role="tablist" aria-label="Message editor mode">
+                  <button
+                    type="button"
+                    role="tab"
+                    :aria-selected="msgMode === 'write'"
+                    :class="['tab', { on: msgMode === 'write' }]"
+                    @click="msgMode = 'write'"
+                  >
+                    Write
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    :aria-selected="msgMode === 'preview'"
+                    :class="['tab', { on: msgMode === 'preview' }]"
+                    @click="msgMode = 'preview'"
+                  >
+                    Preview
+                  </button>
+                </span>
+              </div>
+              <template v-if="msgMode === 'write'">
+                <div class="md-toolbar" role="toolbar" aria-label="Markdown formatting">
+                  <button
+                    type="button"
+                    class="md-btn"
+                    title="Bold"
+                    aria-label="Bold"
+                    @mousedown.prevent
+                    @click="wrapSel('**')"
+                  >
+                    <strong>B</strong>
+                  </button>
+                  <button
+                    type="button"
+                    class="md-btn"
+                    title="Italic"
+                    aria-label="Italic"
+                    @mousedown.prevent
+                    @click="wrapSel('*')"
+                  >
+                    <em>I</em>
+                  </button>
+                  <button
+                    type="button"
+                    class="md-btn"
+                    title="Link"
+                    aria-label="Link"
+                    @mousedown.prevent
+                    @click="insertLink"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    class="md-btn"
+                    title="Bullet list"
+                    aria-label="Bullet list"
+                    @mousedown.prevent
+                    @click="makeList"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    >
+                      <line x1="9" y1="6" x2="20" y2="6" />
+                      <line x1="9" y1="12" x2="20" y2="12" />
+                      <line x1="9" y1="18" x2="20" y2="18" />
+                      <circle cx="4.5" cy="6" r="0.6" fill="currentColor" />
+                      <circle cx="4.5" cy="12" r="0.6" fill="currentColor" />
+                      <circle cx="4.5" cy="18" r="0.6" fill="currentColor" />
+                    </svg>
+                  </button>
+                </div>
+                <textarea
+                  id="share-message"
+                  ref="msgInput"
+                  v-model="body"
+                  rows="4"
+                  placeholder="A note for the recipient"
+                ></textarea>
+              </template>
+              <div v-else class="msg-preview markdown" v-html="msgPreviewHtml"></div>
+            </div>
 
             <label class="field">
               <span class="field-label">Notify me on download <span class="opt">optional</span></span>
@@ -649,36 +809,6 @@ async function submit() {
     opacity: 1;
     transform: none;
   }
-}
-
-.close {
-  position: absolute;
-  top: 1.1rem;
-  right: 1.1rem;
-  width: 2rem;
-  height: 2rem;
-  border: none;
-  background: var(--surface-high);
-  border-radius: 50%;
-  color: var(--on-surface-variant);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition:
-    background 0.2s,
-    color 0.2s;
-  z-index: 1;
-}
-
-.close:hover {
-  background: var(--surface-highest);
-  color: var(--on-surface);
-}
-
-.close svg {
-  width: 1rem;
-  height: 1rem;
 }
 
 .form-head h2 {
@@ -991,6 +1121,127 @@ async function submit() {
 
 .email-wrap input {
   padding-left: 2.4rem;
+}
+
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tabs {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--surface-mid);
+  border-radius: 7px;
+  padding: 2px;
+}
+
+.tab {
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--on-surface-variant);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 12px;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.tab.on {
+  background: var(--card);
+  color: var(--accent-deep);
+  box-shadow: 0 1px 3px rgba(52, 71, 97, 0.12);
+}
+
+.md-toolbar {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--outline-soft);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: var(--surface-low);
+}
+
+.md-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  color: var(--on-surface-variant);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s;
+}
+
+.md-btn:hover {
+  background: var(--card);
+  color: var(--accent-deep);
+}
+
+.md-btn svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.field :deep(textarea#share-message) {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+
+.msg-preview {
+  min-height: 7.4rem;
+  padding: 10px 14px;
+  border: 1px dashed var(--outline-variant);
+  border-radius: 8px;
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--on-surface-variant);
+  overflow-wrap: anywhere;
+}
+
+.msg-preview[data-empty] {
+  color: var(--on-surface-variant);
+  opacity: 0.6;
+}
+
+.msg-preview :deep(p) {
+  margin: 0.4rem 0;
+}
+
+.msg-preview :deep(blockquote) {
+  margin: 0.6rem 0;
+  padding: 0.4rem 0.9rem;
+  border-left: 4px solid var(--accent);
+  background: rgba(238, 244, 255, 0.5);
+  border-radius: 0 10px 10px 0;
+  font-style: italic;
+}
+
+.msg-preview :deep(ul) {
+  padding-left: 1.25rem;
+  margin: 0.4rem 0;
+}
+
+.msg-preview :deep(a) {
+  color: var(--accent-deep);
+}
+
+.drop-sub {
+  margin: 0 0 0.5rem;
+  font-size: 12px;
+  color: var(--on-surface-variant);
 }
 
 /* expiry radio cards, two up on wider screens */
