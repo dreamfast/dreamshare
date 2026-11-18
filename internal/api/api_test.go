@@ -570,7 +570,7 @@ func TestAutoBlockOnTurnstileAbuse(t *testing.T) {
 // over an existing auto row, and an auto trip must never soften an admin
 // made permanent block
 func TestBlockTablePrecedence(t *testing.T) {
-	rg := newRig(t, map[string]string{"AUTOBLOCK_STRIKES": "2", "AUTOBLOCK_HOURS": "1"})
+	rg := newRig(t, map[string]string{"AUTOBLOCK_STRIKES": "1", "AUTOBLOCK_HOURS": "1"})
 
 	// an auto row first, then the admin blocks the same address
 	_, err := rg.store.Writer.ExecContext(t.Context(),
@@ -620,17 +620,31 @@ func TestBlockSweep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// a permanent admin row must survive the sweep
+	_, err = rg.store.Writer.ExecContext(t.Context(),
+		`insert into admin_ip_blocks(ip_cidr, reason, created_by, created_at) values('198.51.100.9/32','manual','admin',?)`,
+		time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer(rg.cfg, rg.store, rg.objects, nil)
 	if err := server.ReconcileOnce(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	var n int
 	if err := rg.store.Reader.QueryRowContext(t.Context(),
-		"select count(*) from admin_ip_blocks").Scan(&n); err != nil {
+		"select count(*) from admin_ip_blocks where ip_cidr = '203.0.113.5/32'").Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 0 {
 		t.Fatalf("expired block survived the sweep: %d rows", n)
+	}
+	if err := rg.store.Reader.QueryRowContext(t.Context(),
+		"select count(*) from admin_ip_blocks where ip_cidr = '198.51.100.9/32'").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("permanent block eaten by the sweep: %d rows", n)
 	}
 }
 

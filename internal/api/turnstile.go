@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// turnstileEndpoint is the production siteverify url, kept as a constant
+// so the request path never mutates server state.
+const turnstileEndpoint = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
 // turnstileVerify is fail closed: when Cloudflare cannot be reached the
 // creation is rejected rather than silently letting bots in. The second
 // return says whether cloudflare actually answered, an unreachable
@@ -31,10 +35,12 @@ func (s *Server) turnstileVerify(ctx context.Context, tokenValue, ip string) (ac
 	form.Set("response", tokenValue)
 	form.Set("remoteip", ip)
 
-	if s.turnstileURL == "" {
-		s.turnstileURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+	url := turnstileEndpoint
+	if s.turnstileURL != "" {
+		// tests point the verifier at a local stub
+		url = s.turnstileURL
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.turnstileURL,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
 		bytes.NewReader([]byte(form.Encode())))
 	if err != nil {
 		return false, false
