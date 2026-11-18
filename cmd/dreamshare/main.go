@@ -173,6 +173,7 @@ func run() error {
 		Addr:              cfg.ListenOn,
 		Handler:           server.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    32 << 10,
 		IdleTimeout:       120 * time.Second,
 	}
 

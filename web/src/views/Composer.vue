@@ -16,6 +16,7 @@ import { planParts, sealPart, startingIndex, freshNoncePrefix, ciphertextSize } 
 import { generateMasterKey, encodeFragmentKey } from '../crypto/frame'
 import { sealManifest, toB64, type ManifestFile } from '../lib/manifest'
 import { saveMineRecord } from '../lib/mine'
+import { loadTurnstile, renderWidget, type TurnstileHandle } from '../lib/turnstile'
 
 const route = useRoute()
 const router = useRouter()
@@ -35,6 +36,11 @@ const dragOver = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const titleInput = ref<HTMLInputElement | null>(null)
 
+// the challenge widget, only mounted when the server enforces it
+const turnstileBox = ref<HTMLElement | null>(null)
+const turnstileToken = ref('')
+let widget: TurnstileHandle | null = null
+
 onMounted(async () => {
   try {
     info.value = await bootstrap()
@@ -47,6 +53,32 @@ onMounted(async () => {
 watch(open, (v) => {
   if (v) requestAnimationFrame(() => titleInput.value?.focus())
 })
+
+// the widget lives and dies with the open form, the third-party script is
+// only fetched at all when the challenge is enforced
+watch(
+  () => [open.value, turnstileEnforced.value, info.value?.turnstile.site_key] as const,
+  ([isOpen, enforced, siteKey]) => {
+    if (widget) {
+      widget.remove()
+      widget = null
+      turnstileToken.value = ''
+    }
+    if (!isOpen || !enforced || !siteKey) return
+    void loadTurnstile()
+      .then(() => {
+        if (!turnstileBox.value) return
+        widget = renderWidget(turnstileBox.value, siteKey, {
+          onToken: (t) => (turnstileToken.value = t),
+          onExpire: () => (turnstileToken.value = ''),
+        })
+      })
+      .catch((e) => {
+        error.value = `cannot load the human check: ${(e as Error).message}`
+      })
+  },
+  { immediate: true },
+)
 
 function toggle() {
   if (busy.value) return
@@ -84,7 +116,11 @@ const tooBig = computed(() => info.value !== null && totalBytes.value > info.val
 const tooMany = computed(
   () => info.value !== null && files.value.length > info.value.limits.max_files_per_share,
 )
-const canSubmit = computed(() => !busy.value && title.value.trim() !== '' && !tooBig.value && !tooMany.value)
+const turnstileEnforced = computed(() => info.value?.turnstile.enforced ?? false)
+const turnstileReady = computed(() => !turnstileEnforced.value || turnstileToken.value !== '')
+const canSubmit = computed(
+  () => !busy.value && title.value.trim() !== '' && !tooBig.value && !tooMany.value && turnstileReady.value,
+)
 const progressPct = computed(() =>
   progress.value.total === 0 ? 0 : Math.round((progress.value.done / progress.value.total) * 100),
 )
@@ -127,18 +163,22 @@ async function submit() {
     const staged = files.value.map((f) => ({ file: f, parts: planParts(f.size, chunk) }))
     progress.value = { done: 0, total: staged.reduce((n, s) => n + s.parts.length, 0) }
 
-    const created = await createShare(csrf, {
-      files: staged.map((s) => ({
-        size: s.parts.reduce((acc, p) => acc + ciphertextSize(p.plaintextLength), 0),
-        frame_count: Math.ceil(s.file.size / info.value!.limits.frame_size),
-        frame_size: info.value!.limits.frame_size,
-        part_size: chunk,
-        expected_parts: s.parts.length,
-      })),
-      expiry_mode: expiryMode.value,
-      expiry_days: expiryDays.value,
-      notify_wanted: notifyEmail.value.trim() !== '',
-    })
+    const created = await createShare(
+      csrf,
+      {
+        files: staged.map((s) => ({
+          size: s.parts.reduce((acc, p) => acc + ciphertextSize(p.plaintextLength), 0),
+          frame_count: Math.ceil(s.file.size / info.value!.limits.frame_size),
+          frame_size: info.value!.limits.frame_size,
+          part_size: chunk,
+          expected_parts: s.parts.length,
+        })),
+        expiry_mode: expiryMode.value,
+        expiry_days: expiryDays.value,
+        notify_wanted: notifyEmail.value.trim() !== '',
+      },
+      turnstileToken.value,
+    )
 
     // per share slot: a single slot would let a failed later upload
     // destroy the only key copy of an earlier live share
@@ -241,6 +281,9 @@ async function submit() {
     router.push({ path: '/uploaded', query: { s: created.share_id } })
   } catch (e) {
     error.value = (e as Error).message
+    // a token dies with the attempt that used it, even a failed one
+    widget?.reset()
+    turnstileToken.value = ''
   } finally {
     busy.value = false
   }
@@ -445,6 +488,8 @@ async function submit() {
             </fieldset>
           </section>
         </div>
+
+        <div v-show="turnstileEnforced" ref="turnstileBox" class="ts-box"></div>
 
         <div class="tray">
           <div class="tray-actions">
@@ -1046,6 +1091,12 @@ async function submit() {
   color: var(--error);
   margin: 0;
   font-size: 14px;
+}
+
+.ts-box {
+  min-height: 65px;
+  display: flex;
+  justify-content: center;
 }
 
 /* action tray */

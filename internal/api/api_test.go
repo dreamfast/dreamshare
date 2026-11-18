@@ -454,6 +454,108 @@ func TestManagerGetNeverRevokes(t *testing.T) {
 	}
 }
 
+// the bootstrap must tell the client the challenge is on and hand over
+// the site key, and must stay silent when it is off so no script loads
+func TestBootstrapTurnstileFields(t *testing.T) {
+	rg := newRig(t, map[string]string{
+		"TURNSTILE_MODE":     "required",
+		"TURNSTILE_SITE_KEY": "0x4AAAAAAAAtesttesttest",
+		"TURNSTILE_SECRET":   "secret-that-is-long-enough",
+	})
+	resp := rg.do("GET", "/api/bootstrap", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bootstrap: %d", resp.StatusCode)
+	}
+	var out struct {
+		Turnstile struct {
+			Enforced bool   `json:"enforced"`
+			SiteKey  string `json:"site_key"`
+		} `json:"turnstile"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Turnstile.Enforced || out.Turnstile.SiteKey != "0x4AAAAAAAAtesttesttest" {
+		t.Fatalf("enforced bootstrap: %+v", out.Turnstile)
+	}
+
+	rgOff := newRig(t, nil)
+	respOff := rgOff.do("GET", "/api/bootstrap", nil, nil)
+	var off struct {
+		Turnstile struct {
+			Enforced bool   `json:"enforced"`
+			SiteKey  string `json:"site_key"`
+		} `json:"turnstile"`
+	}
+	if err := json.NewDecoder(respOff.Body).Decode(&off); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if off.Turnstile.Enforced || off.Turnstile.SiteKey != "" {
+		t.Fatalf("disabled bootstrap must not advertise a site key: %+v", off.Turnstile)
+	}
+}
+
+// robots.txt states the private posture in writing for well behaved
+// crawlers, the header covers the rest
+func TestRobotsTxt(t *testing.T) {
+	rg := newRig(t, nil)
+	resp := rg.do("GET", "/robots.txt", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("robots: %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Disallow: /") {
+		t.Fatalf("robots body: %q", body)
+	}
+	if rt := resp.Header.Get("X-Robots-Tag"); !strings.Contains(rt, "noindex") {
+		t.Fatalf("robots header: %q", rt)
+	}
+}
+
+// repeated turnstile failures must trip the auto block, and the block
+// must expire on its own rather than living forever
+func TestAutoBlockOnTurnstileAbuse(t *testing.T) {
+	rg := newRig(t, map[string]string{
+		"TURNSTILE_MODE":     "required",
+		"TURNSTILE_SITE_KEY": "0x4AAAAAAAAtesttesttest",
+		"TURNSTILE_SECRET":   "secret-that-is-long-enough",
+		"AUTOBLOCK_STRIKES":  "2",
+		"AUTOBLOCK_HOURS":    "1",
+	})
+	csrf := rg.bootstrap()
+	send := func() int {
+		hdr := map[string]string{
+			"Content-Type":      "application/json",
+			"X-Turnstile-Token": "garbage",
+		}
+		for k, v := range csrf {
+			hdr[k] = v
+		}
+		resp := rg.do("POST", "/api/shares", []byte(`{"files":[],"expiry_mode":"burn_on_ack"}`), hdr)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+	// two failed challenges trip the block
+	for i := 0; i < 2; i++ {
+		if code := send(); code != http.StatusForbidden {
+			t.Fatalf("create %d: %d", i, code)
+		}
+	}
+	// the kill switch now answers every route before its own logic
+	if code := rg.do("GET", "/api/bootstrap", nil, nil).StatusCode; code != http.StatusForbidden {
+		t.Fatalf("bootstrap after trip: %d", code)
+	}
+	// expiry releases the block, rewind the stored row to prove it
+	_, err := rg.store.Writer.ExecContext(t.Context(),
+		"update admin_ip_blocks set expires_at = ?", time.Now().Add(-time.Minute).Unix())
+	if err != nil {
+		t.Fatalf("rewind: %v", err)
+	}
+	if code := rg.do("GET", "/api/bootstrap", nil, nil).StatusCode; code != http.StatusOK {
+		t.Fatalf("bootstrap after expiry: %d", code)
+	}
+}
+
 // the csp pins the page to same origin everything, a loosened directive
 // must fail here rather than ship silently
 func TestStaticCSP(t *testing.T) {
@@ -464,11 +566,12 @@ func TestStaticCSP(t *testing.T) {
 	csp := resp.Header.Get("Content-Security-Policy")
 	want := []string{
 		"default-src 'none'",
-		"script-src 'self'",
+		"script-src 'self' https://challenges.cloudflare.com",
 		"style-src 'self'",
 		"font-src 'self'",
 		"img-src 'self' blob:",
 		"connect-src 'self'",
+		"frame-src https://challenges.cloudflare.com",
 		"frame-ancestors 'none'",
 		"base-uri 'none'",
 		"form-action 'self'",
@@ -481,13 +584,15 @@ func TestStaticCSP(t *testing.T) {
 	}
 	// the §13 hard nos, a loosened script-src with unsafe-inline or eval is
 	// the classic quiet regression
-	for _, banned := range []string{"unsafe-inline", "unsafe-eval", "://", "*", "data:"} {
+	for _, banned := range []string{"unsafe-inline", "unsafe-eval", "*", "data:"} {
 		if strings.Contains(csp, banned) {
 			t.Fatalf("csp allows %q: %q", banned, csp)
 		}
 	}
-	if n := strings.Count(csp, "http"); n != 0 {
-		t.Fatalf("csp allows a remote origin: %q", csp)
+	// exactly one third party origin may appear, the turnstile pair, any
+	// second origin in the policy is a regression
+	if n := strings.Count(csp, "https://"); n != 2 {
+		t.Fatalf("csp carries %d remote origins, the turnstile pair expected: %q", n, csp)
 	}
 }
 

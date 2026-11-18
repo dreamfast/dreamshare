@@ -34,6 +34,8 @@ type Limits struct {
 	DailyIPBytes     int64 // per IP per day across uploads and downloads, 5 GB default
 	MaxFilesPerShare int   // bounds the manifest, the session count and the ack arithmetic
 	TombstoneHours   int   // how long terminal rows survive so the feed can show what ended
+	AutoBlockStrikes int   // abuse strikes in the window before the ip is auto blocked
+	AutoBlockHours   int   // how long an auto block holds, admin blocks are permanent
 	UploadSemaphore  int   // in-flight chunk cap, each chunk costs roughly two buffers
 
 	ChunkMinBytes int64 // b2 rejects parts below 5,000,000 bytes, so never plan smaller
@@ -296,6 +298,8 @@ func Load(getenv Env) (*Config, error) {
 	l.DailyIPBytes = intEnv64(getenv, "DAILY_IP_BYTES", 5<<30)
 	l.MaxFilesPerShare = intEnv(getenv, "MAX_FILES_PER_SHARE", 32)
 	l.TombstoneHours = intEnv(getenv, "TOMBSTONE_HOURS", 24)
+	l.AutoBlockStrikes = intEnv(getenv, "AUTOBLOCK_STRIKES", 10)
+	l.AutoBlockHours = intEnv(getenv, "AUTOBLOCK_HOURS", 24)
 	l.UploadSemaphore = intEnv(getenv, "UPLOAD_SEMAPHORE", 8)
 	l.ChunkMinBytes = intEnv64(getenv, "CHUNK_MIN_BYTES", 5_000_000)
 	l.ChunkMaxBytes = intEnv64(getenv, "CHUNK_MAX_BYTES", 32<<20)
@@ -306,6 +310,8 @@ func Load(getenv Env) (*Config, error) {
 	for k, v := range map[string]int{
 		"MAX_FILES_PER_SHARE": l.MaxFilesPerShare,
 		"TOMBSTONE_HOURS":     l.TombstoneHours,
+		"AUTOBLOCK_STRIKES":   l.AutoBlockStrikes,
+		"AUTOBLOCK_HOURS":     l.AutoBlockHours,
 		"UPLOAD_SEMAPHORE":    l.UploadSemaphore,
 	} {
 		if v < 1 {

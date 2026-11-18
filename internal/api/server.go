@@ -38,6 +38,8 @@ type Server struct {
 
 	egressMu  sync.Mutex
 	egress    map[string]int64 // per ip bytes served today, in memory fast path
+	strikes   map[string]int   // abuse strikes in the current hour window
+	strikeWin time.Time
 	egressDay int64
 
 	mailer sender
@@ -66,6 +68,8 @@ func NewServer(cfg *config.Config, store *sqlite.Store, objects b2.Store, log *s
 		csrf:      newCSRFStore(),
 		limiter:   l,
 		egress:    map[string]int64{},
+		strikes:   map[string]int{},
+		strikeWin: time.Now().Truncate(time.Hour),
 	}
 }
 
@@ -74,6 +78,11 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	// a private app, crawlers get nothing and that is stated in writing
+	mux.HandleFunc("GET /robots.txt", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
+	})
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 
 	mux.HandleFunc("GET /api/bootstrap", s.limited(tierBootstrap, s.handleBootstrap))
@@ -100,6 +109,49 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/", spaHandler())
 
 	return s.securityHeaders(mux)
+}
+
+// strike records an abuse event for the ip. Reaching the configured
+// ceiling inside the window auto blocks the address for a bounded time,
+// the admin kill switch answers every later request before anything else.
+// Manual admin blocks stay permanent, auto blocks always expire.
+func (s *Server) strike(ctx context.Context, ip, reason string) {
+	if s.cfg.Limits.AutoBlockStrikes < 1 {
+		return
+	}
+	span := time.Hour
+	s.egressMu.Lock()
+	now := time.Now().Truncate(span)
+	if !s.strikeWin.Equal(now) {
+		s.strikes = map[string]int{}
+		s.strikeWin = now
+	}
+	s.strikes[ip]++
+	tripped := s.strikes[ip] >= s.cfg.Limits.AutoBlockStrikes
+	if tripped {
+		s.strikes[ip] = 0
+	}
+	s.egressMu.Unlock()
+	if !tripped {
+		return
+	}
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return
+	}
+	addr = addr.Unmap()
+	cidr := netip.PrefixFrom(addr, addr.BitLen()).String()
+	until := time.Now().Add(time.Duration(s.cfg.Limits.AutoBlockHours) * time.Hour).Unix()
+	_, err = s.store.Writer.ExecContext(ctx,
+		`insert into admin_ip_blocks(ip_cidr, reason, created_by, created_at, expires_at)
+		 values(?,?,?,?,?) on conflict(ip_cidr) do update set expires_at = excluded.expires_at`,
+		cidr, "auto: "+reason, "auto", time.Now().Unix(), until)
+	if err != nil {
+		s.log.Error("auto block insert failed", "err", err, "ip", ip)
+		return
+	}
+	s.log.Warn("auto blocked abusive ip", "ip", ip, "reason", reason,
+		"hours", s.cfg.Limits.AutoBlockHours)
 }
 
 // ipBlocked checks the admin kill switch table. Cached for the request
@@ -207,7 +259,11 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 type bootstrapResponse struct {
 	CSRFToken string `json:"csrf_token"`
-	Limits    struct {
+	Turnstile struct {
+		Enforced bool   `json:"enforced"`
+		SiteKey  string `json:"site_key"`
+	} `json:"turnstile"`
+	Limits struct {
 		MaxShareBytes    int64    `json:"max_share_bytes"`
 		MaxFilesPerShare int      `json:"max_files_per_share"`
 		ChunkMinBytes    int64    `json:"chunk_min_bytes"`
@@ -229,6 +285,12 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	})
 	var resp bootstrapResponse
 	resp.CSRFToken = token
+	// the client renders the challenge widget only when told to, so the
+	// third-party script never loads on recipient pages at all
+	resp.Turnstile.Enforced = s.turnstileEnforced()
+	if resp.Turnstile.Enforced {
+		resp.Turnstile.SiteKey = s.cfg.TurnstileSiteKey
+	}
 	resp.Limits.MaxShareBytes = s.cfg.Limits.MaxShareBytes
 	resp.Limits.MaxFilesPerShare = s.cfg.Limits.MaxFilesPerShare
 	resp.Limits.ChunkMinBytes = s.cfg.Limits.ChunkMinBytes

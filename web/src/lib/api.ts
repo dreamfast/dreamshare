@@ -3,6 +3,10 @@
 
 export interface BootstrapInfo {
   csrf_token: string
+  turnstile: {
+    enforced: boolean
+    site_key: string
+  }
   limits: {
     max_share_bytes: number
     max_files_per_share: number
@@ -65,12 +69,17 @@ export async function createShare(
     expiry_mode: string
     expiry_days: number
     notify_wanted: boolean
-    turnstile_token?: string
   },
+  turnstileToken?: string,
 ): Promise<CreatedShare> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...csrfHeaders(csrf),
+  }
+  if (turnstileToken) headers['X-Turnstile-Token'] = turnstileToken
   const resp = await fetch('/api/shares', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...csrfHeaders(csrf) },
+    headers,
     body: JSON.stringify(body),
   })
   return json<CreatedShare>(resp)

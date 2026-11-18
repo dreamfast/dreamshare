@@ -53,6 +53,9 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
 
 	if !s.turnstileOk(r, ip) {
+		// a failed challenge is deliberate scripting, it counts toward the
+		// auto block the same as rate abuse
+		s.strike(r.Context(), ip, "turnstile failure")
 		writeError(w, http.StatusForbidden, "turnstile")
 		return
 	}

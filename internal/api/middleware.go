@@ -11,8 +11,8 @@ import (
 )
 
 // securityHeaders sets the response hardening on every response including
-// errors. The X-Robots-Tag matrix is the four route classes that must never
-// be indexed.
+// errors. the app is private, so every response carries noindex rather
+// than only the secret bearing routes.
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
@@ -21,27 +21,19 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cross-Origin-Resource-Policy", "same-origin")
 		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		h.Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+		// the only third party origin in the policy is the turnstile
+		// challenge, it loads on the upload form alone and never on a
+		// recipient page
 		h.Set("Content-Security-Policy",
-			"default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; "+
-				"font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
+			"default-src 'none'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; img-src 'self' blob:; "+
+				"font-src 'self'; connect-src 'self'; frame-src https://challenges.cloudflare.com; "+
+				"frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
 		if s.cfg.Prod {
 			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		}
-		switch {
-		case hasPrefixAny(r.URL.Path, "/s/", "/m/", "/dl/", "/admin"):
-			h.Set("X-Robots-Tag", "noindex, nofollow")
-		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-func hasPrefixAny(path string, prefixes ...string) bool {
-	for _, p := range prefixes {
-		if len(path) >= len(p) && path[:len(p)] == p {
-			return true
-		}
-	}
-	return false
 }
 
 // csrfStore is a bounded server side token store. Both the cookie token and
@@ -194,6 +186,7 @@ func (s *Server) limited(t tier, next http.HandlerFunc) http.HandlerFunc {
 		// one bucket per ip and tier, a shared bucket would let the strict
 		// create ceiling be eaten by permissive part traffic
 		if !s.limiter.allow(ip+"|"+strconv.Itoa(int(t)), t) {
+			s.strike(r.Context(), ip, "rate limited on tier "+strconv.Itoa(int(t)))
 			writeError(w, http.StatusTooManyRequests, "rate_limited")
 			return
 		}

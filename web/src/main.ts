@@ -27,24 +27,30 @@ const router = createRouter({
 // every page card carries the same view transition name, so navigating
 // between pages morphs circle into card into list the same way the
 // composer morphs. the composer pair is skipped because that morph is css
-// driven inside one component and a snapshot transition would fight it
+// driven inside one component and a snapshot transition would fight it.
+// the callback resolves the guard and waits only for vue's dom patch,
+// anything heavier freezes the old snapshot and stalls the router
 const composerPaths = new Set(['/', '/upload'])
 router.beforeEach((to) => {
   const canTransition =
     typeof document !== 'undefined' &&
     typeof document.startViewTransition === 'function' &&
+    document.visibilityState === 'visible' &&
     !window.matchMedia('(prefers-reduced-motion: reduce)').matches
   if (!canTransition) return true
   if (composerPaths.has(to.path) && composerPaths.has(router.currentRoute.value.path)) {
     return true
   }
   return new Promise<boolean>((resolve) => {
-    document.startViewTransition(async () => {
+    try {
+      document.startViewTransition(async () => {
+        resolve(true)
+        await nextTick()
+      })
+    } catch {
+      // a refused transition must never block the navigation
       resolve(true)
-      // let vue patch the dom and the browser paint before the snapshot
-      await nextTick()
-      await new Promise<void>((done) => requestAnimationFrame(() => done()))
-    })
+    }
   })
 })
 
