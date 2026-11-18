@@ -386,7 +386,7 @@ async function submit() {
       </button>
 
       <!-- the open state: the same element grown into the two column card -->
-      <div v-if="open" class="form">
+      <div v-if="open" class="form" :class="{ sending: busy }" :inert="busy">
         <header class="form-head">
           <h2>Share something</h2>
           <p class="form-sub">Files are encrypted in your browser before they are sent.</p>
@@ -660,8 +660,9 @@ async function submit() {
           <div class="tray-actions">
             <button type="button" class="btn-ghost" :disabled="busy" @click="toggle()">Cancel</button>
             <button type="button" class="btn-primary" :disabled="!canSubmit" @click="submit">
-              {{ busy ? 'Sending…' : 'Create share' }}
+              <span v-if="busy" class="spin" aria-hidden="true"></span>
               <svg
+                v-else
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -672,6 +673,7 @@ async function submit() {
               >
                 <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
+              {{ busy ? 'Sending' : 'Create share' }}
             </button>
           </div>
         </div>
@@ -1355,6 +1357,31 @@ async function submit() {
   justify-content: center;
 }
 
+.form.sending {
+  animation: sending-pulse 2.4s ease-in-out infinite;
+}
+
+/* the whole card is inert while sending, the controls grey out through
+   the disabled styles and the pulse says life, not death */
+@keyframes sending-pulse {
+  0%,
+  100% {
+    box-shadow: 0 20px 48px rgba(52, 71, 97, 0.12);
+  }
+  50% {
+    box-shadow: 0 20px 64px rgba(92, 153, 238, 0.28);
+  }
+}
+
+.spin {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  animation: spin 0.8s linear infinite;
+}
+
 /* action tray */
 .tray {
   border-top: 1px solid var(--outline-soft);
@@ -1410,7 +1437,9 @@ async function submit() {
   .morph,
   .morph .plus,
   .form,
-  .halo-outer {
+  .halo-outer,
+  .form.sending,
+  .spin {
     transition: none;
     animation: none;
   }
