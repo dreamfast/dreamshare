@@ -54,6 +54,11 @@ watch(open, (v) => {
   if (v) requestAnimationFrame(() => titleInput.value?.focus())
 })
 
+// declared before the immediate watch below reads them, a later
+// declaration is a temporal dead zone crash on every mount
+const turnstileEnforced = computed(() => info.value?.turnstile.enforced ?? false)
+const turnstileReady = computed(() => !turnstileEnforced.value || turnstileToken.value !== '')
+
 // the widget lives and dies with the open form, the third-party script is
 // only fetched at all when the challenge is enforced
 watch(
@@ -116,8 +121,6 @@ const tooBig = computed(() => info.value !== null && totalBytes.value > info.val
 const tooMany = computed(
   () => info.value !== null && files.value.length > info.value.limits.max_files_per_share,
 )
-const turnstileEnforced = computed(() => info.value?.turnstile.enforced ?? false)
-const turnstileReady = computed(() => !turnstileEnforced.value || turnstileToken.value !== '')
 const canSubmit = computed(
   () => !busy.value && title.value.trim() !== '' && !tooBig.value && !tooMany.value && turnstileReady.value,
 )

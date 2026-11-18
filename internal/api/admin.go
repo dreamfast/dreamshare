@@ -90,8 +90,9 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// the admin login carries the same fail closed bot gate as public
-	// share creation, and the same per ip rate ceiling
-	if !s.turnstileOk(r, s.clientIP(r)) {
+	// share creation, and the same per ip rate ceiling. no strike here,
+	// the admin allowlist already bounds who can reach this route at all
+	if accepted, _ := s.turnstileOk(r, s.clientIP(r)); !accepted {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte("404 page not found\n"))
@@ -330,9 +331,12 @@ func (s *Server) handleAdminBlock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_cidr")
 		return
 	}
+	// an admin block is permanent by definition, re blocking an address
+	// that holds a stale auto row must reinstate that, not inherit its
+	// expiry
 	_, err := s.store.Writer.ExecContext(r.Context(),
 		`insert into admin_ip_blocks(ip_cidr, reason, created_by, created_at) values(?,?,?,?)
-		on conflict(ip_cidr) do update set reason = excluded.reason`,
+		on conflict(ip_cidr) do update set reason = excluded.reason, expires_at = null`,
 		req.CIDR, req.Reason, "admin", time.Now().Unix())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal")

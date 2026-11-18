@@ -44,6 +44,8 @@ type Server struct {
 
 	mailer sender
 
+	turnstileURL string // set in tests to a local stub, prod uses the cloudflare endpoint
+
 	admin      *adminauth.Service
 	adminAllow *adminauth.Allowlist
 }
@@ -128,9 +130,6 @@ func (s *Server) strike(ctx context.Context, ip, reason string) {
 	}
 	s.strikes[ip]++
 	tripped := s.strikes[ip] >= s.cfg.Limits.AutoBlockStrikes
-	if tripped {
-		s.strikes[ip] = 0
-	}
 	s.egressMu.Unlock()
 	if !tripped {
 		return
@@ -142,14 +141,23 @@ func (s *Server) strike(ctx context.Context, ip, reason string) {
 	addr = addr.Unmap()
 	cidr := netip.PrefixFrom(addr, addr.BitLen()).String()
 	until := time.Now().Add(time.Duration(s.cfg.Limits.AutoBlockHours) * time.Hour).Unix()
+	// a null expires_at is an admin made permanent block, an auto trip
+	// must never soften it, only an existing auto block may be extended
 	_, err = s.store.Writer.ExecContext(ctx,
 		`insert into admin_ip_blocks(ip_cidr, reason, created_by, created_at, expires_at)
-		 values(?,?,?,?,?) on conflict(ip_cidr) do update set expires_at = excluded.expires_at`,
+		 values(?,?,?,?,?)
+		 on conflict(ip_cidr) do update set expires_at = excluded.expires_at
+		 where admin_ip_blocks.expires_at is not null`,
 		cidr, "auto: "+reason, "auto", time.Now().Unix(), until)
 	if err != nil {
 		s.log.Error("auto block insert failed", "err", err, "ip", ip)
 		return
 	}
+	// the trip only counts once the row landed, a failed insert keeps the
+	// counter so the next strike retires
+	s.egressMu.Lock()
+	s.strikes[ip] = 0
+	s.egressMu.Unlock()
 	s.log.Warn("auto blocked abusive ip", "ip", ip, "reason", reason,
 		"hours", s.cfg.Limits.AutoBlockHours)
 }
@@ -341,13 +349,16 @@ func (s *Server) clientIP(r *http.Request) string {
 	addr = addr.Unmap()
 	for _, prefix := range s.cfg.TrustedProxies {
 		if prefix.Contains(addr) {
-			// the proxy set headers win, but only the one the proxy itself
-			// controls. CF-Connecting-IP is overwritten by cloudflare and
-			// cannot be client chosen. the leftmost XFF entry is client
-			// supplied when the proxy appends, so the rightmost element is
-			// the proxy's own observation.
-			if cip := r.Header.Get("CF-Connecting-IP"); net.ParseIP(cip) != nil {
-				return cip
+			// the rightmost XFF element is the trusted proxy's own
+			// observation, the leftmost is client supplied when the proxy
+			// appends. CF-Connecting-IP is only cloudflare controlled when
+			// cloudflare actually fronts the origin, otherwise a forwarded
+			// header would let a client strike any victim address, so it
+			// needs the explicit deployment flag.
+			if s.cfg.CloudflareFronted {
+				if cip := r.Header.Get("CF-Connecting-IP"); net.ParseIP(cip) != nil {
+					return cip
+				}
 			}
 			if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
 				last := forwardedLast(fwd)

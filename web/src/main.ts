@@ -42,14 +42,24 @@ router.beforeEach((to) => {
     return true
   }
   return new Promise<boolean>((resolve) => {
+    let settled = false
+    const go = () => {
+      if (!settled) {
+        settled = true
+        resolve(true)
+      }
+    }
+    // a deferred or refused transition must never hold the route hostage
+    const guard = setTimeout(go, 250)
     try {
       document.startViewTransition(async () => {
-        resolve(true)
+        go()
+        clearTimeout(guard)
         await nextTick()
       })
     } catch {
-      // a refused transition must never block the navigation
-      resolve(true)
+      clearTimeout(guard)
+      go()
     }
   })
 })

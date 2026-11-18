@@ -25,10 +25,9 @@ type createRequest struct {
 		PartSize      int   `json:"part_size"`
 		ExpectedParts int   `json:"expected_parts"`
 	} `json:"files"`
-	ExpiryMode     string `json:"expiry_mode"`
-	ExpiryDays     int    `json:"expiry_days"`
-	NotifyWanted   bool   `json:"notify_wanted"`
-	TurnstileToken string `json:"turnstile_token"`
+	ExpiryMode   string `json:"expiry_mode"`
+	ExpiryDays   int    `json:"expiry_days"`
+	NotifyWanted bool   `json:"notify_wanted"`
 }
 
 type createResponse struct {
@@ -52,10 +51,14 @@ type uploadSessionView struct {
 func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 	ip := s.clientIP(r)
 
-	if !s.turnstileOk(r, ip) {
-		// a failed challenge is deliberate scripting, it counts toward the
-		// auto block the same as rate abuse
-		s.strike(r.Context(), ip, "turnstile failure")
+	accepted, definite := s.turnstileOk(r, ip)
+	if !accepted {
+		// only a definitive cloudflare rejection strikes, an unreachable
+		// verifier fails closed without punishing the caller for our
+		// outage
+		if definite {
+			s.strike(r.Context(), ip, "turnstile failure")
+		}
 		writeError(w, http.StatusForbidden, "turnstile")
 		return
 	}
@@ -499,12 +502,12 @@ func (s *Server) turnstileEnforced() bool {
 	return s.cfg.TurnstileMode == "required"
 }
 
-func (s *Server) turnstileOk(r *http.Request, ip string) bool {
+func (s *Server) turnstileOk(r *http.Request, ip string) (accepted, definite bool) {
 	switch s.cfg.TurnstileMode {
 	case "disabled":
-		return true
+		return true, true
 	case "optional":
-		return true
+		return true, true
 	default:
 		return s.turnstileVerify(r.Context(), r.Header.Get("X-Turnstile-Token"), ip)
 	}

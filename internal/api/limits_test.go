@@ -86,17 +86,44 @@ func TestClientIPTrustedProxyRightmostXFF(t *testing.T) {
 		t.Fatalf("clientIP = %q, want the rightmost proxy observation 203.0.113.9", got)
 	}
 
-	// cf connecting ip wins over xff entirely
+	// the cf header is ignored without the fronted flag, a plain proxy
+	// chain would otherwise let any client strike a victim address
 	req2, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	req2.Header.Set("CF-Connecting-IP", "198.51.100.7")
-	req2.Header.Set("X-Forwarded-For", "1.2.3.4")
+	req2.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.9")
 	req2.RemoteAddr = "127.0.0.1:9999"
-	if got := server.clientIP(req2); got != "198.51.100.7" {
-		t.Fatalf("clientIP = %q, want the cf header 198.51.100.7", got)
+	if got := server.clientIP(req2); got != "203.0.113.9" {
+		t.Fatalf("clientIP = %q, want the rightmost xff, cf header must not win without the fronted flag", got)
+	}
+
+	// with the flag set the cf header wins, cloudflare overwrites it so
+	// clients cannot choose it
+	cfgFronted, ferr := config.Load(config.TestEnv(map[string]string{
+		"APP_ENV":            "dev",
+		"TURNSTILE_MODE":     "disabled",
+		"B2_ENDPOINT":        "http://localhost:9000",
+		"B2_REGION":          "us-west-002",
+		"B2_BUCKET":          "dreamshare",
+		"B2_KEY_ID":          "kid",
+		"B2_APPLICATION_KEY": "application-key-16",
+		"BEHIND_PROXY":       "true",
+		"TRUSTED_PROXIES":    "127.0.0.0/8",
+		"CLOUDFLARE_FRONTED": "true",
+	}))
+	if ferr != nil {
+		t.Fatal(ferr)
+	}
+	serverFronted := NewServer(cfgFronted, store, fake.New(), nil)
+	req3, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
+	req3.Header.Set("CF-Connecting-IP", "198.51.100.7")
+	req3.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.9")
+	req3.RemoteAddr = "127.0.0.1:9999"
+	if got := serverFronted.clientIP(req3); got != "198.51.100.7" {
+		t.Fatalf("clientIP = %q, want the cf header when fronted", got)
 	}
 
 	// from an untrusted peer the headers are ignored
-	req3, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
+	req3, _ = http.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	req3.Header.Set("X-Forwarded-For", "1.2.3.4")
 	req3.RemoteAddr = "203.0.113.99:12345"
 	if got := server.clientIP(req3); got != "203.0.113.99" {

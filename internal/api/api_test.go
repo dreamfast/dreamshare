@@ -24,11 +24,12 @@ import (
 )
 
 type rig struct {
-	t       *testing.T
-	srv     *httptest.Server
-	store   *sqlite.Store
-	objects *fake.Store
-	cfg     *config.Config
+	t         *testing.T
+	srv       *httptest.Server
+	apiServer *Server
+	store     *sqlite.Store
+	objects   *fake.Store
+	cfg       *config.Config
 }
 
 func newRig(t *testing.T, envOverrides map[string]string) *rig {
@@ -62,7 +63,7 @@ func newRig(t *testing.T, envOverrides map[string]string) *rig {
 	server := NewServer(cfg, store, objects, nil)
 	ts := httptest.NewServer(server.Handler())
 	t.Cleanup(ts.Close)
-	return &rig{t: t, srv: ts, store: store, objects: objects, cfg: cfg}
+	return &rig{t: t, srv: ts, apiServer: server, store: store, objects: objects, cfg: cfg}
 }
 
 func (rg *rig) do(method, path string, body []byte, hdr map[string]string) *http.Response {
@@ -522,6 +523,15 @@ func TestAutoBlockOnTurnstileAbuse(t *testing.T) {
 		"AUTOBLOCK_STRIKES":  "2",
 		"AUTOBLOCK_HOURS":    "1",
 	})
+	// hermetic: the verifier points at a local stub so the test says
+	// nothing about the sandbox's network
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":false}`))
+	}))
+	t.Cleanup(stub.Close)
+	rg.apiServer.turnstileURL = stub.URL
+
 	csrf := rg.bootstrap()
 	send := func() int {
 		hdr := map[string]string{
@@ -556,6 +566,74 @@ func TestAutoBlockOnTurnstileAbuse(t *testing.T) {
 	}
 }
 
+// the two block writers must not fight: an admin block is permanent even
+// over an existing auto row, and an auto trip must never soften an admin
+// made permanent block
+func TestBlockTablePrecedence(t *testing.T) {
+	rg := newRig(t, map[string]string{"AUTOBLOCK_STRIKES": "2", "AUTOBLOCK_HOURS": "1"})
+
+	// an auto row first, then the admin blocks the same address
+	_, err := rg.store.Writer.ExecContext(t.Context(),
+		`insert into admin_ip_blocks(ip_cidr, reason, created_by, created_at, expires_at)
+		 values('127.0.0.1/32','auto: test','auto',?,?)`,
+		time.Now().Unix(), time.Now().Add(time.Hour).Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// replay the admin handler shape directly, the http path needs the
+	// allowlist and session
+	_, err = rg.store.Writer.ExecContext(t.Context(),
+		`insert into admin_ip_blocks(ip_cidr, reason, created_by, created_at) values(?,?,?,?)
+		 on conflict(ip_cidr) do update set reason = excluded.reason, expires_at = null`,
+		"127.0.0.1/32", "manual", "admin", time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exp *int64
+	if err := rg.store.Reader.QueryRowContext(t.Context(),
+		"select expires_at from admin_ip_blocks where ip_cidr = '127.0.0.1/32'").Scan(&exp); err != nil {
+		t.Fatal(err)
+	}
+	if exp != nil {
+		t.Fatalf("admin block over auto row must be permanent, got expires_at %v", *exp)
+	}
+
+	// now an auto trip against the permanent row must leave it permanent
+	rg.apiServer.strike(t.Context(), "127.0.0.1", "test trip")
+	if err := rg.store.Reader.QueryRowContext(t.Context(),
+		"select expires_at from admin_ip_blocks where ip_cidr = '127.0.0.1/32'").Scan(&exp); err != nil {
+		t.Fatal(err)
+	}
+	if exp != nil {
+		t.Fatalf("auto trip must not soften a permanent admin block, got expires_at %v", *exp)
+	}
+}
+
+// the reconciler sweep must clear expired auto rows so the table cannot
+// grow forever
+func TestBlockSweep(t *testing.T) {
+	rg := newRig(t, nil)
+	_, err := rg.store.Writer.ExecContext(t.Context(),
+		`insert into admin_ip_blocks(ip_cidr, reason, created_by, created_at, expires_at)
+		 values('203.0.113.5/32','auto: test','auto',?,?)`,
+		time.Now().Unix(), time.Now().Add(-time.Minute).Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(rg.cfg, rg.store, rg.objects, nil)
+	if err := server.ReconcileOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := rg.store.Reader.QueryRowContext(t.Context(),
+		"select count(*) from admin_ip_blocks").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expired block survived the sweep: %d rows", n)
+	}
+}
+
 // the csp pins the page to same origin everything, a loosened directive
 // must fail here rather than ship silently
 func TestStaticCSP(t *testing.T) {
@@ -582,17 +660,14 @@ func TestStaticCSP(t *testing.T) {
 			t.Fatalf("csp missing %q in %q", w, csp)
 		}
 	}
-	// the §13 hard nos, a loosened script-src with unsafe-inline or eval is
-	// the classic quiet regression
-	for _, banned := range []string{"unsafe-inline", "unsafe-eval", "*", "data:"} {
-		if strings.Contains(csp, banned) {
-			t.Fatalf("csp allows %q: %q", banned, csp)
-		}
-	}
-	// exactly one third party origin may appear, the turnstile pair, any
-	// second origin in the policy is a regression
-	if n := strings.Count(csp, "https://"); n != 2 {
-		t.Fatalf("csp carries %d remote origins, the turnstile pair expected: %q", n, csp)
+	// exact equality, substring checks let a plain http origin slip in
+	// beside the sanctioned turnstile pair
+	const exact = "default-src 'none'; script-src 'self' https://challenges.cloudflare.com; " +
+		"style-src 'self'; img-src 'self' blob:; font-src 'self'; connect-src 'self'; " +
+		"frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'none'; " +
+		"form-action 'self'; object-src 'none'"
+	if csp != exact {
+		t.Fatalf("csp drifted from the pinned policy:\n got: %s\nwant: %s", csp, exact)
 	}
 }
 

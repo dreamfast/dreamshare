@@ -54,6 +54,15 @@ func (s *Server) ReconcileOnce(ctx context.Context) error {
 		s.log.Info("tombstone sweep", "rows", swept)
 	}
 
+	// expired auto blocks die here, the kill switch query filters them
+	// live but without this the table grows forever and every request
+	// scans it
+	if _, err := s.store.Writer.ExecContext(ctx,
+		"delete from admin_ip_blocks where expires_at is not null and expires_at < ?",
+		time.Now().Unix()); err != nil {
+		s.log.Error("block sweep", "err", err)
+	}
+
 	if err := s.DrainOutbox(ctx); err != nil {
 		s.log.Error("outbox", "err", err)
 	}

@@ -93,9 +93,10 @@ type Config struct {
 
 	SQLitePath string
 
-	BehindProxy    bool
-	TrustedProxies []netip.Prefix // empty unless behind a proxy, the real client ip comes only from these
-	IPMode         string         // "full" or "truncated"
+	BehindProxy       bool
+	CloudflareFronted bool           // only then is CF-Connecting-IP trusted, a forwarded header otherwise poisons limits
+	TrustedProxies    []netip.Prefix // empty unless behind a proxy, the real client ip comes only from these
+	IPMode            string         // "full" or "truncated"
 
 	TurnstileMode    string // "required", "optional" or "disabled"
 	TurnstileSiteKey string
@@ -167,6 +168,7 @@ func Load(getenv Env) (*Config, error) {
 	// Behind a proxy the socket address is the proxy's, so trusting nobody is
 	// the only safe default.
 	c.BehindProxy = boolEnv(getenv, "BEHIND_PROXY")
+	c.CloudflareFronted = boolEnv(getenv, "CLOUDFLARE_FRONTED")
 	if c.BehindProxy {
 		prefixes, perr := parseCIDRs(getenv("TRUSTED_PROXIES"))
 		// a wider-than-intended prefix here makes every client ip spoofable,
@@ -310,14 +312,15 @@ func Load(getenv Env) (*Config, error) {
 	for k, v := range map[string]int{
 		"MAX_FILES_PER_SHARE": l.MaxFilesPerShare,
 		"TOMBSTONE_HOURS":     l.TombstoneHours,
-		"AUTOBLOCK_STRIKES":   l.AutoBlockStrikes,
+		"AUTOBLOCK_STRIKES":   l.AutoBlockStrikes, // 0 is allowed, it disables the auto block
 		"AUTOBLOCK_HOURS":     l.AutoBlockHours,
 		"UPLOAD_SEMAPHORE":    l.UploadSemaphore,
 	} {
 		if v < 1 {
 			// a zero semaphore or zero files accepts nothing, a zero
-			// tombstone is legal but arrives as a deliberate 0, not garbage
-			if k != "TOMBSTONE_HOURS" || v < 0 {
+			// tombstone and zero strikes are legal but arrive as a
+			// deliberate 0, not garbage
+			if (k != "TOMBSTONE_HOURS" && k != "AUTOBLOCK_STRIKES") || v < 0 {
 				errs = append(errs, fmt.Errorf("%s must be at least 1, got %d", k, v))
 			}
 		}
