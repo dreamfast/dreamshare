@@ -25,9 +25,9 @@ test('message write and preview modes', async ({ page }) => {
   await page.getByRole('button', { name: 'New share' }).click()
   await expect(page).toHaveURL('/upload')
 
-  await page.getByLabel(/message/i).fill('hello **recipient**')
+  await page.locator('#share-message').fill('hello **recipient**')
   await page.getByRole('tab', { name: 'Preview' }).click()
   await expect(page.locator('.msg-preview strong', { hasText: 'recipient' })).toBeVisible()
   await page.getByRole('tab', { name: 'Write' }).click()
-  await expect(page.getByLabel(/message/i)).toHaveValue('hello **recipient**')
+  await expect(page.locator('#share-message')).toHaveValue('hello **recipient**')
 })

@@ -36,7 +36,7 @@ test('upload to wipe', async ({ page, browser }) => {
   await expect(page.getByRole('heading', { name: 'Share something' })).toBeVisible()
 
   await page.getByLabel('title').fill('e2e contract')
-  await page.getByLabel(/message/i).fill('hello **recipient**')
+  await page.locator('#share-message').fill('hello **recipient**')
   await page.locator('input[type=file]').setInputFiles({
     name: 'notes.txt',
     mimeType: 'text/plain',
