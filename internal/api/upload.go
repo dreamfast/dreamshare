@@ -209,6 +209,12 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		}
 		if uerr := s.store.SetUploadID(r.Context(), f.SessionID, uploadID); uerr != nil {
 			s.log.Error("save upload id", "err", uerr)
+			// the mpu has no db reference now, the stale sweep can never
+			// reach it, abort it here or it holds an unfinished file slot
+			// until the bucket lifecycle rule fires
+			if aerr := s.objects.AbortUpload(r.Context(), f.ObjectKey, uploadID); aerr != nil && !errors.Is(aerr, b2.ErrNotFound) {
+				s.log.Error("orphan mpu abort after failed save", "err", aerr)
+			}
 			writeError(w, http.StatusInternalServerError, "internal")
 			return
 		}
