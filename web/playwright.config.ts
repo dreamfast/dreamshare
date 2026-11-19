@@ -2,6 +2,8 @@ import { defineConfig } from '@playwright/test'
 
 export default defineConfig({
   testDir: 'e2e',
+  // the turnstile gate test belongs to its own config with the check enforced
+  testIgnore: '**/turnstile-gate.test.ts',
   timeout: 120_000,
   use: {
     baseURL: 'http://127.0.0.1:8901',

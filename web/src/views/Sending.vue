@@ -51,8 +51,11 @@ onMounted(() => {
       }
     })
     .catch((e) => {
-      state.phase = 'error'
-      state.error = `cannot reach the server: ${(e as Error).message}`
+      // a late rejection must not overwrite a finished or cancelled run
+      if (state.phase === 'needs-token' || state.phase === 'sending') {
+        state.phase = 'error'
+        state.error = `cannot reach the server: ${(e as Error).message}`
+      }
     })
   // a done store means this view was revisited after success, the
   // success page is where that visitor belongs
@@ -120,10 +123,19 @@ function goHome() {
   router.push('/')
 }
 
-function retry() {
-  if (!info.value) return
+async function retry() {
+  // a failed bootstrap leaves no info, the button still has to work
+  if (!info.value) {
+    try {
+      const i = await bootstrap()
+      info.value = i
+      state.enforced = i.turnstile.enforced
+    } catch {
+      return
+    }
+  }
   // a spent or absent token is replaced by the fresh widget round
-  retrySend(info.value)
+  retrySend(info.value!)
 }
 
 function onKey(ev: KeyboardEvent) {

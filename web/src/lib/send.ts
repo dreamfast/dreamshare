@@ -87,7 +87,6 @@ function resetSend(): void {
   state.perFile = []
   state.error = ''
   state.shareId = ''
-  running = false
 }
 
 // the whole send: create, parts, complete, seal, finalize. the engine is

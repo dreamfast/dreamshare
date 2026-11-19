@@ -70,6 +70,8 @@ web-build:
 web-e2e:
 	rm -f /tmp/dreamshare-e2e.db
 	cd web && npx playwright test
+	rm -f /tmp/dreamshare-e2e-turnstile.db
+	cd web && npx playwright test --config playwright.turnstile.config.ts
 
 run: build
 	./bin/dreamshare
