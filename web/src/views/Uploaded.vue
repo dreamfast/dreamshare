@@ -263,14 +263,9 @@ h1 {
   line-height: 18px;
   color: var(--on-surface-variant);
   opacity: 0.8;
-  max-width: 22rem;
-  text-align: right;
-}
-
-@media (max-width: 640px) {
-  .link-hint {
-    text-align: left;
-  }
+  width: 100%;
+  text-align: left;
+  max-width: none;
 }
 
 .link {
