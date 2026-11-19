@@ -5,7 +5,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { bootstrap, type BootstrapInfo } from '../lib/api'
-import { cancelSend, retrySend, sendState, startSend } from '../lib/send'
+import { cancelSend, retrySend, sendStarted, sendState, startSend } from '../lib/send'
 import { loadTurnstile, renderWidget, type TurnstileHandle } from '../lib/turnstile'
 
 const router = useRouter()
@@ -32,27 +32,46 @@ watch(
 // the challenge is the gate to start. enforced shares begin only once a
 // token lands, everything else starts immediately
 onMounted(() => {
-  void bootstrap().then((i) => {
-    info.value = i
-    if (state.phase === 'sending' && !state.enforced) void startSend(i, '')
-  })
+  // a fresh bootstrap reconciles enforcement: the form may have staged
+  // the run before the server flipped its mode, and the widget needs the
+  // site key regardless
+  void bootstrap()
+    .then((i) => {
+      info.value = i
+      state.enforced = i.turnstile.enforced
+      if (sendStarted()) {
+        return
+      }
+      if (state.phase === 'needs-token' && !state.enforced) {
+        void startSend(i, '')
+      } else if (state.phase === 'sending' && state.enforced) {
+        state.phase = 'needs-token'
+      } else if (state.phase === 'sending') {
+        void startSend(i, '')
+      }
+    })
+    .catch((e) => {
+      state.phase = 'error'
+      state.error = `cannot reach the server: ${(e as Error).message}`
+    })
+  // a done store means this view was revisited after success, the
+  // success page is where that visitor belongs
+  if (state.phase === 'done') router.replace({ path: '/uploaded', query: { s: state.shareId } })
   // focus sits on the card, not an input, so the escape key is heard at
   // the window level
   window.addEventListener('keydown', onKey)
 })
 
-const enforced = computed(() => state.enforced)
-
 watch(
-  [() => state.phase, enforced] as const,
-  ([phase, isEnforced]) => {
+  [() => state.phase, () => info.value?.turnstile.site_key] as const,
+  ([phase, siteKey]) => {
     if (widget) {
       widget.remove()
       widget = null
     }
-    if (phase !== 'needs-token' || !isEnforced) return
-    const siteKey = info.value?.turnstile.site_key
-    if (!siteKey) return
+    if (phase !== 'needs-token' || !siteKey) return
+    const isEnforced = state.enforced
+    if (!isEnforced) return
     void loadTurnstile()
       .then(() => {
         if (!turnstileBox.value || state.phase !== 'needs-token') return
@@ -60,7 +79,7 @@ watch(
           onToken: (t) => {
             if (state.phase === 'needs-token' && info.value) void startSend(info.value, t)
           },
-          onExpire: () => {},
+          onExpire: () => widget?.reset(),
         })
       })
       .catch((e) => {

@@ -37,7 +37,12 @@ const state = reactive({
   enforced: false,
 })
 
-let ac: AbortController | null = null
+let ac: AbortController | null = null // one controller per run, replaced on start
+let running = false
+
+export function sendStarted(): boolean {
+  return running
+}
 
 export function sendState() {
   return state
@@ -58,6 +63,7 @@ export function stageSend(draft: SendDraft, files: File[], info: BootstrapInfo):
   }))
   state.error = ''
   state.shareId = ''
+  running = false
   state.phase = state.enforced ? 'needs-token' : 'sending'
 }
 
@@ -74,12 +80,14 @@ export function cancelSend(): void {
 }
 
 function resetSend(): void {
+  running = false
   state.phase = 'idle'
   state.draft = null
   state.files = []
   state.perFile = []
   state.error = ''
   state.shareId = ''
+  running = false
 }
 
 // the whole send: create, parts, complete, seal, finalize. the engine is
@@ -87,12 +95,16 @@ function resetSend(): void {
 // grew per file counters
 export async function startSend(info: BootstrapInfo, turnstileToken: string): Promise<void> {
   const draft = state.draft
-  if (!draft || state.files.length === 0) {
-    state.phase = 'error'
-    state.error = 'nothing staged'
+  if (!draft || running) {
+    if (!draft) {
+      state.phase = 'error'
+      state.error = 'nothing staged'
+    }
     return
   }
+
   ac = new AbortController()
+  running = true
   const { signal } = ac
   state.phase = 'sending'
   state.error = ''
@@ -238,9 +250,14 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
       expiresAt: draft.expiryMode === 'ttl' ? Date.now() + draft.expiryDays * 86400_000 : 0,
     })
 
+    state.files = []
+    state.perFile = []
+    state.draft = null
+    running = false
     state.phase = 'done'
   } catch (e) {
     if (signal.aborted) return
+    running = false
     state.phase = 'error'
     state.error = (e as Error).message
   }
@@ -249,7 +266,7 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
 // a retry is a fresh share: new key, new create, the abandoned half
 // upload is swept by the server inside a day
 export function retrySend(info: BootstrapInfo): void {
-  if (!state.draft || state.files.length === 0) return
+  if (!state.draft) return
   state.error = ''
   state.phase = state.enforced ? 'needs-token' : 'sending'
   if (!state.enforced) void startSend(info, '')
