@@ -114,20 +114,14 @@ async function copy(text: string, which: 'link' | 'revoke') {
         <!-- the link is the key warning, a calm accent bar -->
         <div class="warn" role="alert">
           <p>
-            The link is the key. Anyone holding it can open the share, and if you lose it nobody can recover
-            the files, including us.
+            The link is the key. The part after # is your encryption key, we never see it and cannot see your
+            files. If you lose the link, nobody can recover the files, including us.
           </p>
         </div>
 
         <!-- the link itself -->
         <div class="link-section">
-          <div class="link-labels">
-            <span class="link-label">Share link</span>
-            <span class="link-hint">
-              The part after # is your encryption key. We never see it, and we cannot see your files. Only
-              those you share the key with can open them.
-            </span>
-          </div>
+          <span class="link-label">Share link</span>
           <code class="link"
             ><span class="link-base">{{ linkBase }}</span
             ><span class="link-frag">#{{ fragment }}</span></code
@@ -242,30 +236,12 @@ h1 {
   gap: 0.6rem;
 }
 
-.link-labels {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
 .link-label {
   font-size: 12px;
   font-weight: 500;
   letter-spacing: 0.8px;
   text-transform: uppercase;
   color: var(--on-surface-variant);
-}
-
-.link-hint {
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--on-surface-variant);
-  opacity: 0.8;
-  width: 100%;
-  text-align: left;
-  max-width: none;
 }
 
 .link {
