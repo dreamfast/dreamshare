@@ -114,12 +114,51 @@ func TestClientIPTrustedProxyRightmostXFF(t *testing.T) {
 		t.Fatal(ferr)
 	}
 	serverFronted := NewServer(cfgFronted, store, fake.New(), nil)
+	// the flag alone is not enough: the proxy saw 203.0.113.9 as its peer,
+	// no cloudflare edge, so the forged cf header loses and the direct
+	// peer address wins the bucket
 	req3, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
 	req3.Header.Set("CF-Connecting-IP", "198.51.100.7")
 	req3.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.9")
 	req3.RemoteAddr = "127.0.0.1:9999"
-	if got := serverFronted.clientIP(req3); got != "198.51.100.7" {
-		t.Fatalf("clientIP = %q, want the cf header when fronted", got)
+	if got := serverFronted.clientIP(req3); got != "203.0.113.9" {
+		t.Fatalf("clientIP = %q, a forged cf header behind a non cloudflare peer must lose, want 203.0.113.9", got)
+	}
+
+	// when the proxy's peer IS a cloudflare edge the header is cloudflare
+	// authored and wins
+	req4, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
+	req4.Header.Set("CF-Connecting-IP", "198.51.100.7")
+	req4.Header.Set("X-Forwarded-For", "1.2.3.4, 104.16.132.229")
+	req4.RemoteAddr = "127.0.0.1:9999"
+	if got := serverFronted.clientIP(req4); got != "198.51.100.7" {
+		t.Fatalf("clientIP = %q, want the cf header when the proxy saw a cloudflare edge", got)
+	}
+
+	// a custom range override decides the same question
+	cfgCustom, cerr := config.Load(config.TestEnv(map[string]string{
+		"APP_ENV":            "dev",
+		"TURNSTILE_MODE":     "disabled",
+		"B2_ENDPOINT":        "http://localhost:9000",
+		"B2_REGION":          "us-west-002",
+		"B2_BUCKET":          "dreamshare",
+		"B2_KEY_ID":          "kid",
+		"B2_APPLICATION_KEY": "application-key-16",
+		"BEHIND_PROXY":       "true",
+		"TRUSTED_PROXIES":    "127.0.0.0/8",
+		"CLOUDFLARE_FRONTED": "true",
+		"CLOUDFLARE_RANGES":  "203.0.113.0/24",
+	}))
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	serverCustom := NewServer(cfgCustom, store, fake.New(), nil)
+	req5, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", nil)
+	req5.Header.Set("CF-Connecting-IP", "198.51.100.7")
+	req5.Header.Set("X-Forwarded-For", "1.2.3.4, 203.0.113.9")
+	req5.RemoteAddr = "127.0.0.1:9999"
+	if got := serverCustom.clientIP(req5); got != "198.51.100.7" {
+		t.Fatalf("clientIP = %q, want the cf header when the override covers the proxy peer", got)
 	}
 
 	// from an untrusted peer the headers are ignored

@@ -83,6 +83,31 @@ type Admin struct {
 	LockoutMinutes  int
 }
 
+// defaultCloudflareRanges is cloudflare's published edge list. when they
+// announce a new range the failure is visible, clients on it fall back to
+// the shared edge ip in limits, never to a spoofable header. override with
+// CLOUDFLARE_RANGES without waiting for a release.
+var defaultCloudflareRanges = mustCIDRs(
+	"173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22",
+	"141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
+	"197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
+	"104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+	"2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+	"2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
+)
+
+func mustCIDRs(items ...string) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(items))
+	for _, it := range items {
+		p, err := netip.ParsePrefix(it)
+		if err != nil {
+			panic("static cloudflare range list is malformed: " + it)
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // Config is the fully validated configuration. The zero value is never
 // usable: Load returns a complete Config or one error listing every problem.
 type Config struct {
@@ -96,6 +121,7 @@ type Config struct {
 	BehindProxy       bool
 	CloudflareFronted bool           // only then is CF-Connecting-IP trusted, a forwarded header otherwise poisons limits
 	TrustedProxies    []netip.Prefix // empty unless behind a proxy, the real client ip comes only from these
+	CloudflareRanges  []netip.Prefix // the addresses cloudflare edges come from, CF-Connecting-IP is honoured only when the proxy saw one of these
 	IPMode            string         // "full" or "truncated"
 
 	TurnstileMode    string // "required", "optional" or "disabled"
@@ -169,6 +195,15 @@ func Load(getenv Env) (*Config, error) {
 	// the only safe default.
 	c.BehindProxy = boolEnv(getenv, "BEHIND_PROXY")
 	c.CloudflareFronted = boolEnv(getenv, "CLOUDFLARE_FRONTED")
+	c.CloudflareRanges = defaultCloudflareRanges
+	if raw := getenv("CLOUDFLARE_RANGES"); raw != "" {
+		over, oerr := parseCIDRs(raw)
+		if oerr != nil || len(over) == 0 {
+			errs = append(errs, fmt.Errorf("CLOUDFLARE_RANGES must be a comma list of CIDRs"))
+		} else {
+			c.CloudflareRanges = over
+		}
+	}
 	if c.BehindProxy {
 		prefixes, perr := parseCIDRs(getenv("TRUSTED_PROXIES"))
 		// a wider-than-intended prefix here makes every client ip spoofable,

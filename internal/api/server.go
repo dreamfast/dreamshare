@@ -98,7 +98,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/shares/{token}/manifest", s.limited(tierCheck, s.handleManifest))
 	mux.HandleFunc("GET /dl/{token}/{file}", s.limited(tierDownload, s.handleDownload))
 	mux.HandleFunc("POST /api/shares/{token}/ack", s.requireCSRF(s.limited(tierCheck, s.handleAck)))
-	mux.HandleFunc("POST /api/shares/{token}/notify", s.requireCSRF(s.limited(tierCheck, s.handleNotify)))
 
 	mux.HandleFunc("DELETE /api/shares/{token}", s.limited(tierCheck, s.handleRevoke))
 	mux.HandleFunc("GET /m/{token}", s.limited(tierCheck, s.handleManagerPage))
@@ -348,27 +347,46 @@ func (s *Server) clientIP(r *http.Request) string {
 	// prefix contains, unmap before the trusted proxy check
 	addr = addr.Unmap()
 	for _, prefix := range s.cfg.TrustedProxies {
-		if prefix.Contains(addr) {
-			// the rightmost XFF element is the trusted proxy's own
-			// observation, the leftmost is client supplied when the proxy
-			// appends. CF-Connecting-IP is only cloudflare controlled when
-			// cloudflare actually fronts the origin, otherwise a forwarded
-			// header would let a client strike any victim address, so it
-			// needs the explicit deployment flag.
-			if s.cfg.CloudflareFronted {
-				if cip := r.Header.Get("CF-Connecting-IP"); net.ParseIP(cip) != nil {
-					return cip
-				}
-			}
-			if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-				last := forwardedLast(fwd)
-				if net.ParseIP(last) != nil {
-					return last
+		if !prefix.Contains(addr) {
+			continue
+		}
+		// the rightmost XFF element is the trusted proxy's own
+		// observation, the leftmost is client supplied when the proxy
+		// appends.
+		last := ""
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			last = forwardedLast(fwd)
+		}
+		// CF-Connecting-IP is cloudflare controlled only when the proxy
+		// observed a cloudflare edge as its peer. a deployment flag alone
+		// was not enough, the origin is directly reachable and any client
+		// could forge the header for a fresh limit bucket. when the proxy
+		// saw a non cloudflare peer that peer address is the truth, forged
+		// headers included in the count against the forger.
+		if s.cfg.CloudflareFronted && last != "" {
+			if lip := net.ParseIP(last); lip != nil {
+				laddr, ok := netip.AddrFromSlice(lip)
+				if ok && prefixContains(s.cfg.CloudflareRanges, laddr.Unmap()) {
+					if cip := r.Header.Get("CF-Connecting-IP"); net.ParseIP(cip) != nil {
+						return cip
+					}
 				}
 			}
 		}
+		if net.ParseIP(last) != nil {
+			return last
+		}
 	}
 	return host
+}
+
+func prefixContains(prefixes []netip.Prefix, addr netip.Addr) bool {
+	for _, p := range prefixes {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func forwardedLast(v string) string {
