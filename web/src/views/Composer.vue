@@ -3,21 +3,9 @@
 // DreamFast brand colours.
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  csrfCookie,
-  bootstrap,
-  createShare,
-  putPart,
-  completeSession,
-  finalizeShare,
-  type BootstrapInfo,
-} from '../lib/api'
-import { planParts, sealPart, startingIndex, freshNoncePrefix, ciphertextSize } from '../lib/pipeline'
-import { generateMasterKey, encodeFragmentKey } from '../crypto/frame'
-import { sealManifest, toB64, type ManifestFile } from '../lib/manifest'
-import { saveMineRecord } from '../lib/mine'
+import { bootstrap, type BootstrapInfo } from '../lib/api'
 import { renderBody } from '../lib/markdown'
-import { loadTurnstile, renderWidget, type TurnstileHandle } from '../lib/turnstile'
+import { stageSend } from '../lib/send'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,19 +18,13 @@ const body = ref('')
 const notifyEmail = ref('')
 const expiryMode = ref<'burn_on_ack' | 'ttl'>('burn_on_ack')
 const expiryDays = ref(1)
-const busy = ref(false)
 const error = ref('')
-const progress = ref({ done: 0, total: 0 })
 const dragOver = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const titleInput = ref<HTMLInputElement | null>(null)
 const msgInput = ref<HTMLTextAreaElement | null>(null)
 
-// the challenge widget, only mounted when the server enforces it
-const turnstileBox = ref<HTMLElement | null>(null)
-const turnstileToken = ref('')
 const msgMode = ref<'write' | 'preview'>('write')
-let widget: TurnstileHandle | null = null
 
 onMounted(async () => {
   try {
@@ -63,35 +45,6 @@ watch(open, (v) => {
 // page uses, what you see is what they get
 const msgPreviewHtml = computed(() =>
   body.value.trim() === '' ? '<p class="msg-empty">Nothing to preview yet.</p>' : renderBody(body.value),
-)
-
-const turnstileEnforced = computed(() => info.value?.turnstile.enforced ?? false)
-const turnstileReady = computed(() => !turnstileEnforced.value || turnstileToken.value !== '')
-
-// the widget lives and dies with the open form, the third-party script is
-// only fetched at all when the challenge is enforced
-watch(
-  () => [open.value, turnstileEnforced.value, info.value?.turnstile.site_key] as const,
-  ([isOpen, enforced, siteKey]) => {
-    if (widget) {
-      widget.remove()
-      widget = null
-      turnstileToken.value = ''
-    }
-    if (!isOpen || !enforced || !siteKey) return
-    void loadTurnstile()
-      .then(() => {
-        if (!turnstileBox.value) return
-        widget = renderWidget(turnstileBox.value, siteKey, {
-          onToken: (t) => (turnstileToken.value = t),
-          onExpire: () => (turnstileToken.value = ''),
-        })
-      })
-      .catch((e) => {
-        error.value = `cannot load the human check: ${(e as Error).message}`
-      })
-  },
-  { immediate: true },
 )
 
 // markdown toolbar, plain selection edits so nothing here needs a library
@@ -148,7 +101,6 @@ function makeList() {
 }
 
 function toggle() {
-  if (busy.value) return
   if (open.value) {
     router.push('/')
   } else {
@@ -157,7 +109,7 @@ function toggle() {
 }
 
 function onKey(ev: KeyboardEvent) {
-  if (ev.key === 'Escape' && open.value && !busy.value) {
+  if (ev.key === 'Escape' && open.value) {
     router.push('/')
     return
   }
@@ -183,12 +135,7 @@ const tooBig = computed(() => info.value !== null && totalBytes.value > info.val
 const tooMany = computed(
   () => info.value !== null && files.value.length > info.value.limits.max_files_per_share,
 )
-const canSubmit = computed(
-  () => !busy.value && title.value.trim() !== '' && !tooBig.value && !tooMany.value && turnstileReady.value,
-)
-const progressPct = computed(() =>
-  progress.value.total === 0 ? 0 : Math.round((progress.value.done / progress.value.total) * 100),
-)
+const canSubmit = computed(() => title.value.trim() !== '' && !tooBig.value && !tooMany.value)
 
 function pickFiles(list: FileList | null) {
   if (!list) return
@@ -208,152 +155,22 @@ function removeFile(i: number) {
   files.value.splice(i, 1)
 }
 
-async function sha256Hex(buf: ArrayBuffer): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', buf)
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-async function submit() {
+function submit() {
+  // the sending view owns the run from here: the draft and files cross
+  // over in the store, the route change morphs this card into that one
   if (!info.value || !canSubmit.value) return
-  busy.value = true
-  error.value = ''
-  try {
-    const master = generateMasterKey()
-    const fragment = encodeFragmentKey(master)
-    const chunk = info.value.limits.chunk_max_bytes
-    const csrf = csrfCookie()
-
-    const staged = files.value.map((f) => ({ file: f, parts: planParts(f.size, chunk) }))
-    progress.value = { done: 0, total: staged.reduce((n, s) => n + s.parts.length, 0) }
-
-    const created = await createShare(
-      csrf,
-      {
-        files: staged.map((s) => ({
-          size: s.parts.reduce((acc, p) => acc + ciphertextSize(p.plaintextLength), 0),
-          frame_count: Math.ceil(s.file.size / info.value!.limits.frame_size),
-          frame_size: info.value!.limits.frame_size,
-          part_size: chunk,
-          expected_parts: s.parts.length,
-        })),
-        expiry_mode: expiryMode.value,
-        expiry_days: expiryDays.value,
-        notify_wanted: notifyEmail.value.trim() !== '',
-      },
-      turnstileToken.value,
-    )
-
-    // per share slot: a single slot would let a failed later upload
-    // destroy the only key copy of an earlier live share
-    const handoffKey = `dreamshare.handoff.v1.${created.share_id}`
-    try {
-      sessionStorage.setItem(
-        handoffKey,
-        JSON.stringify({ s: created.share_id, k: fragment, m: created.manager_token }),
-      )
-    } catch (storageErr) {
-      error.value = `cannot store the link: ${(storageErr as Error).message}. Nothing was uploaded.`
-      return
-    }
-
-    const manifestFiles: ManifestFile[] = []
-    for (let i = 0; i < staged.length; i++) {
-      const entry = staged[i]
-      const session = created.upload_sessions[i]
-      if (!entry || !session) throw new Error('session_missing')
-      const { file, parts } = entry
-      const prefix = await freshNoncePrefix()
-      const lastNumber = parts[parts.length - 1]?.number ?? 1
-
-      // two parts in flight. tokens are positional, each one is the hmac
-      // of its own part number, so they are tracked per part: a flat
-      // queue desynced on the look ahead refill and handed a used token
-      // to a later part, which the server rightly refused
-      const tokenMap = new Map<number, string>()
-      session.first_tokens.forEach((t, i) => tokenMap.set(i + 1, t))
-      let nextPart = 1
-      let firstError: unknown = null
-      const send = async (partNumber: number, partToken: string): Promise<void> => {
-        const part = parts[partNumber - 1]
-        if (!part) return
-        const plain = new Uint8Array(
-          await file.slice(part.offset, part.offset + part.plaintextLength).arrayBuffer(),
-        )
-        const sealed = await sealPart(
-          master,
-          created.share_id,
-          session.file_id,
-          prefix,
-          startingIndex(part),
-          plain,
-          partNumber === lastNumber,
-        )
-        const digest = await sha256Hex(sealed.ciphertext.slice().buffer)
-        const resp = await putPart(
-          csrf,
-          session.session_id,
-          partNumber,
-          sealed.ciphertext.slice().buffer as ArrayBuffer,
-          digest,
-          partToken,
-        )
-        ;(resp.next_tokens ?? []).forEach((t, i) => tokenMap.set(partNumber + 1 + i, t))
-        progress.value.done++
-      }
-      while (firstError === null && nextPart <= parts.length) {
-        const inFlight: Array<Promise<void>> = []
-        while (nextPart <= parts.length && tokenMap.has(nextPart) && inFlight.length < 2) {
-          const n = nextPart++
-          inFlight.push(send(n, tokenMap.get(n)!).catch((e) => (firstError ??= e)))
-        }
-        if (inFlight.length === 0) break
-        await Promise.race(inFlight)
-        await Promise.allSettled(inFlight)
-      }
-      if (firstError !== null) throw firstError
-      await completeSession(csrf, session.session_id, session.first_tokens[0] ?? '')
-      const fp = await sha256Hex(await file.arrayBuffer())
-      manifestFiles.push({
-        id: session.file_id,
-        name: file.name,
-        mime: file.type || 'application/octet-stream',
-        size: file.size,
-        sha256: fp,
-      })
-    }
-
-    const blobs = await sealManifest(master, created.share_id, {
+  stageSend(
+    {
       title: title.value.trim(),
       body: body.value,
-      files: manifestFiles,
-      ...(notifyEmail.value.trim() !== '' ? { notify_email: notifyEmail.value.trim() } : {}),
-    })
-    await finalizeShare(csrf, created.share_id, {
-      title_ct: toB64(blobs.titleCt),
-      manifest_ct: toB64(blobs.manifestCt),
-      check_ct: toB64(blobs.checkCt),
-    })
-
-    saveMineRecord({
-      shareID: created.share_id,
-      managerToken: created.manager_token,
-      title: title.value.trim(),
-      createdAt: Date.now(),
+      notifyEmail: notifyEmail.value,
       expiryMode: expiryMode.value,
-      expiresAt: expiryMode.value === 'ttl' ? Date.now() + expiryDays.value * 86400_000 : 0,
-    })
-
-    router.push({ path: '/uploaded', query: { s: created.share_id } })
-  } catch (e) {
-    error.value = (e as Error).message
-    // a token dies with the attempt that used it, even a failed one
-    widget?.reset()
-    turnstileToken.value = ''
-  } finally {
-    busy.value = false
-  }
+      expiryDays: expiryDays.value,
+    },
+    files.value,
+    info.value,
+  )
+  router.push('/sending')
 }
 </script>
 
@@ -386,7 +203,7 @@ async function submit() {
       </button>
 
       <!-- the open state: the same element grown into the two column card -->
-      <div v-if="open" class="form" :class="{ sending: busy }" :inert="busy">
+      <div v-if="open" class="form">
         <header class="form-head">
           <h2>Share something</h2>
           <p class="form-sub">Files are encrypted in your browser before they are sent.</p>
@@ -435,9 +252,6 @@ async function submit() {
             <div v-if="files.length" class="manifest">
               <div class="manifest-head">
                 <span class="manifest-label">Attached files</span>
-                <span v-if="progress.total > 0" class="manifest-parts" role="status"
-                  >{{ progress.done }} / {{ progress.total }} parts sent</span
-                >
               </div>
               <ul class="files">
                 <li v-for="(f, i) in files" :key="i">
@@ -476,9 +290,6 @@ async function submit() {
                   </button>
                 </li>
               </ul>
-              <div v-if="progress.total > 0" class="track">
-                <div class="fill" :style="{ width: `${progressPct}%` }"></div>
-              </div>
             </div>
 
             <p v-if="tooBig" class="error">Over the size limit for one share.</p>
@@ -654,15 +465,11 @@ async function submit() {
           </section>
         </div>
 
-        <div v-show="turnstileEnforced" ref="turnstileBox" class="ts-box"></div>
-
         <div class="tray">
           <div class="tray-actions">
-            <button type="button" class="btn-ghost" :disabled="busy" @click="toggle()">Cancel</button>
+            <button type="button" class="btn-ghost" @click="toggle()">Cancel</button>
             <button type="button" class="btn-primary" :disabled="!canSubmit" @click="submit">
-              <span v-if="busy" class="spin" aria-hidden="true"></span>
               <svg
-                v-else
                 viewBox="0 0 24 24"
                 fill="none"
                 stroke="currentColor"
@@ -673,7 +480,7 @@ async function submit() {
               >
                 <path d="M5 12h14M12 5l7 7-7 7" />
               </svg>
-              {{ busy ? 'Sending' : 'Create share' }}
+              Share
             </button>
           </div>
         </div>
@@ -1033,22 +840,6 @@ async function submit() {
   height: 0.85rem;
 }
 
-/* hairline progress */
-.track {
-  width: 100%;
-  height: 5px;
-  border-radius: 9999px;
-  background: var(--surface-highest);
-  overflow: hidden;
-}
-
-.fill {
-  height: 100%;
-  border-radius: 9999px;
-  background: var(--accent);
-  transition: width 0.3s ease;
-}
-
 /* fields */
 .field {
   display: flex;
@@ -1351,37 +1142,6 @@ async function submit() {
   font-size: 14px;
 }
 
-.ts-box {
-  min-height: 65px;
-  display: flex;
-  justify-content: center;
-}
-
-.form.sending {
-  animation: sending-pulse 2.4s ease-in-out infinite;
-}
-
-/* the whole card is inert while sending, the controls grey out through
-   the disabled styles and the pulse says life, not death */
-@keyframes sending-pulse {
-  0%,
-  100% {
-    box-shadow: 0 20px 48px rgba(52, 71, 97, 0.12);
-  }
-  50% {
-    box-shadow: 0 20px 64px rgba(92, 153, 238, 0.28);
-  }
-}
-
-.spin {
-  width: 1rem;
-  height: 1rem;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.35);
-  border-top-color: #fff;
-  animation: spin 0.8s linear infinite;
-}
-
 /* action tray */
 .tray {
   border-top: 1px solid var(--outline-soft);
@@ -1437,9 +1197,7 @@ async function submit() {
   .morph,
   .morph .plus,
   .form,
-  .halo-outer,
-  .form.sending,
-  .spin {
+  .halo-outer {
     transition: none;
     animation: none;
   }

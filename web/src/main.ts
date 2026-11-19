@@ -2,6 +2,7 @@ import { createApp, nextTick } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import Composer from './views/Composer.vue'
+import Sending from './views/Sending.vue'
 import Uploaded from './views/Uploaded.vue'
 import Share from './views/Share.vue'
 import Mine from './views/Mine.vue'
@@ -15,6 +16,7 @@ const router = createRouter({
     // working and /upload deep links straight into the open panel
     { path: '/', component: Composer },
     { path: '/upload', component: Composer },
+    { path: '/sending', component: Sending },
     { path: '/uploaded', component: Uploaded },
     { path: '/s/:token', component: Share },
     { path: '/mine', component: Mine },

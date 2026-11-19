@@ -71,6 +71,7 @@ export async function createShare(
     notify_wanted: boolean
   },
   turnstileToken?: string,
+  signal?: AbortSignal,
 ): Promise<CreatedShare> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -81,6 +82,7 @@ export async function createShare(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
   })
   return json<CreatedShare>(resp)
 }
@@ -92,6 +94,7 @@ export async function putPart(
   data: ArrayBuffer,
   sha256Hex: string,
   partToken: string,
+  signal?: AbortSignal,
 ): Promise<{ ok: boolean; next_tokens: string[] }> {
   const resp = await fetch(`/api/sessions/${sessionID}/parts/${partNumber}`, {
     method: 'POST',
@@ -102,15 +105,22 @@ export async function putPart(
       'X-Part-SHA256': sha256Hex,
     },
     body: data,
+    ...(signal ? { signal } : {}),
   })
   return json(resp)
 }
 
-export async function completeSession(csrf: string, sessionID: string, partToken: string): Promise<void> {
+export async function completeSession(
+  csrf: string,
+  sessionID: string,
+  partToken: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const resp = await fetch(`/api/sessions/${sessionID}/complete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...csrfHeaders(csrf), 'X-Part-Token': partToken },
     body: '{}',
+    ...(signal ? { signal } : {}),
   })
   await json(resp)
 }
@@ -119,11 +129,13 @@ export async function finalizeShare(
   csrf: string,
   shareID: string,
   blobs: { title_ct: string; manifest_ct: string; check_ct: string },
+  signal?: AbortSignal,
 ): Promise<void> {
   const resp = await fetch(`/api/shares/${shareID}/finalize`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...csrfHeaders(csrf) },
     body: JSON.stringify(blobs),
+    ...(signal ? { signal } : {}),
   })
   await json(resp)
 }
