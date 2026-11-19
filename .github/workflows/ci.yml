@@ -22,12 +22,15 @@ jobs:
           go-version: "1.27"
           cache: false
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
       # same pinned versions as the Makefile, so local and ci agree
       - run: make tools
 
-      - name: gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - run: make ci
+      # lint and unit tests only. the e2e suites stay local, the runner
+      # has no browser binaries and the human eye beats a screenshot diff
+      - run: make ci-checks

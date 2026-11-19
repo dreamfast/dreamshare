@@ -1,5 +1,7 @@
-# One target, make ci, is the whole PR gate. If it passes locally it passes
-# in CI, because it runs the exact same commands.
+# One target, make ci, is the whole local gate. the ci-checks subset is
+# what the remote workflow runs: same linters and tests, no e2e, because
+# the runner has no browser binaries and the browser install is not
+# worth the minutes on every push.
 
 GO ?= go
 BIN := $(shell $(GO) env GOBIN 2>/dev/null)
@@ -15,7 +17,7 @@ GOLANGCI_VERSION    := v2.15.0
 GOSEC_VERSION       := v2.30.0
 GOIMPORTS_VERSION   := v0.49.0
 
-.PHONY: tools ci fmt-check vet staticcheck golangci gosec vuln test tidy-diff build web-build web-test web-e2e run
+.PHONY: tools ci ci-checks fmt-check vet staticcheck golangci gosec vuln test tidy-diff build web-build web-test web-e2e run
 
 tools:
 	GOBIN=$(BIN) $(GO) install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
@@ -25,7 +27,9 @@ tools:
 	GOBIN=$(BIN) $(GO) install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION)
 	GOBIN=$(BIN) $(GO) install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION)
 
-ci: fmt-check vet staticcheck golangci gosec test tidy-diff vuln web-build build web-e2e
+ci: ci-checks web-e2e
+
+ci-checks: fmt-check vet staticcheck golangci gosec test tidy-diff vuln web-build build
 
 fmt-check:
 	@out="$$($(BIN)/gofumpt -l .)"; if [ -n "$$out" ]; then \
