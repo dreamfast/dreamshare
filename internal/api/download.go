@@ -287,8 +287,8 @@ func parseByteRange(v string) (start, end int64, ok bool) {
 
 // validEmail is a shape and character screen, not a deliverability
 // claim. The address reaches a raw smtp envelope and a raw To header, so
-// anything with space, control flow, or header punctuation is refused
-// outright, the mailer reports real failures when the send runs.
+// whitespace, line breaks and header punctuation are refused outright,
+// the mailer reports real failures when the send runs.
 func validEmail(addr string) bool {
 	if strings.ContainsAny(addr, " \t\r\n<>()\",;:") {
 		return false

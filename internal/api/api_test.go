@@ -512,6 +512,44 @@ func TestAckProofRequired(t *testing.T) {
 	}
 }
 
+func TestFinalizeCarriesCheckHash(t *testing.T) {
+	rg := newRig(t, nil)
+	csrf := rg.bootstrap()
+	// a text only share carries no sessions, finalise is the only step.
+	// the hash reaches the store through the request alone, a dropped
+	// field would silently reopen the keyless wipe path
+	body, _ := json.Marshal(map[string]any{"files": nil, "expiry_mode": "ttl", "expiry_days": 1})
+	resp := rg.do("POST", "/api/shares", body, csrf)
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create: %d %s", resp.StatusCode, b)
+	}
+	var created createResponse
+	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat("ab", 32)
+	fin := map[string]any{
+		"title_ct":     base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("t"), 8)),
+		"manifest_ct":  base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("m"), 64)),
+		"check_ct":     base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("c"), 45)),
+		"check_sha256": want,
+	}
+	fb, _ := json.Marshal(fin)
+	finResp := rg.do("POST", "/api/shares/"+created.ShareID+"/finalize", fb, csrf) //nolint:misspell // the route token
+	_, _ = io.Copy(io.Discard, finResp.Body)
+	if finResp.StatusCode != http.StatusOK {
+		t.Fatalf("finalise: %d", finResp.StatusCode)
+	}
+	hash, err := rg.store.CheckSHA(t.Context(), created.ShareID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash != want {
+		t.Fatalf("stored check hash = %q, want the finalise payload hash", hash)
+	}
+}
+
 func TestManagerGetNeverRevokes(t *testing.T) {
 	rg := newRig(t, nil)
 	shareID, mgr, _ := rg.uploadShare([]int64{1000}, "burn_on_ack")

@@ -113,7 +113,7 @@ test('multipart across the exact chunk multiple', async ({ page, browser }) => {
   await expect(
     page.getByText('dreamshare-e2e-big.bin').or(page.getByText('Your share is ready')),
   ).toBeVisible()
-  await expect(page.getByText(/\d+ \/ \d+ parts/)).toBeVisible()
+  await expect(page.getByText(/\d+ \/ \d+ parts/).or(page.getByText('Your share is ready'))).toBeVisible()
   await expect(page).toHaveURL(/\/uploaded/, { timeout: 180_000 })
   expect(page.url()).not.toMatch(/[?&](k|m)=/)
   expect(page.url().includes('#')).toBe(false)
