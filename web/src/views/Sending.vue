@@ -104,12 +104,21 @@ const parts = computed(() => ({
   done: state.perFile.reduce((n, f) => n + f.sentParts, 0),
   total: state.perFile.reduce((n, f) => n + f.totalParts, 0),
 }))
+const bytes = computed(() => ({
+  sent: state.perFile.reduce((n, f) => n + f.sentBytes, 0),
+  total: state.perFile.reduce((n, f) => n + f.totalBytes, 0),
+}))
 const pct = computed(() =>
-  parts.value.total === 0 ? 0 : Math.round((parts.value.done / parts.value.total) * 100),
+  bytes.value.total === 0
+    ? parts.value.total === 0
+      ? 0
+      : Math.round((parts.value.done / parts.value.total) * 100)
+    : Math.min(100, Math.round((bytes.value.sent / bytes.value.total) * 100)),
 )
 
-function filePct(f: { sentParts: number; totalParts: number }): number {
-  return f.totalParts === 0 ? 0 : Math.round((f.sentParts / f.totalParts) * 100)
+function filePct(f: { sentBytes: number; totalBytes: number }): number {
+  if (f.totalBytes > 0) return Math.min(100, Math.round((f.sentBytes / f.totalBytes) * 100))
+  return 0
 }
 
 function fmtSize(n: number): string {
@@ -388,6 +397,11 @@ onUnmounted(() => {
   transition: width 240ms ease;
 }
 
+.files li:not(.done) .file-fill {
+  background-image: repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.35) 0 6px, transparent 6px 12px);
+  animation: stripes 900ms linear infinite;
+}
+
 .files li.done .file-fill {
   background: var(--accent);
 }
@@ -411,6 +425,17 @@ onUnmounted(() => {
   border-radius: 9999px;
   background: var(--accent);
   transition: width 240ms ease;
+  background-image: repeating-linear-gradient(-45deg, rgba(255, 255, 255, 0.35) 0 6px, transparent 6px 12px);
+  animation: stripes 900ms linear infinite;
+}
+
+@keyframes stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 24px 0;
+  }
 }
 
 .overall-label {
@@ -429,6 +454,7 @@ onUnmounted(() => {
   .file-fill,
   .fill {
     transition: none;
+    animation: none;
   }
 }
 </style>

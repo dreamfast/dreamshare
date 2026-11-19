@@ -23,6 +23,8 @@ export interface SendFileProgress {
   size: number
   sentParts: number
   totalParts: number
+  sentBytes: number
+  totalBytes: number
 }
 
 // module scope on purpose: a component instance dies with its route, the
@@ -55,12 +57,17 @@ export function stageSend(draft: SendDraft, files: File[], info: BootstrapInfo):
   state.enforced = info.turnstile.enforced
   state.draft = draft
   state.files = files
-  state.perFile = files.map((f) => ({
-    name: f.name,
-    size: f.size,
-    sentParts: 0,
-    totalParts: planParts(f.size, info.limits.chunk_max_bytes).length,
-  }))
+  state.perFile = files.map((f) => {
+    const parts = planParts(f.size, info.limits.chunk_max_bytes)
+    return {
+      name: f.name,
+      size: f.size,
+      sentParts: 0,
+      totalParts: parts.length,
+      sentBytes: 0,
+      totalBytes: parts.reduce((acc, p) => acc + ciphertextSize(p.plaintextLength), 0),
+    }
+  })
   state.error = ''
   state.shareId = ''
   running = false
@@ -119,6 +126,8 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
       size: s.file.size,
       sentParts: 0,
       totalParts: s.parts.length,
+      sentBytes: 0,
+      totalBytes: s.parts.reduce((acc, p) => acc + ciphertextSize(p.plaintextLength), 0),
     }))
 
     const created = await createShare(
@@ -163,7 +172,7 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
       const prefix = await freshNoncePrefix()
       const lastNumber = parts[parts.length - 1]?.number ?? 1
 
-      // two parts in flight. tokens are positional, each one is the hmac
+      // tokens are positional, each one is the hmac
       // of its own part number, so they are tracked per part: a flat
       // queue desynced on the look ahead refill and handed a used token
       // to a later part, which the server rightly refused
@@ -171,6 +180,16 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
       session.first_tokens.forEach((t, j) => tokenMap.set(j + 1, t))
       let nextPart = 1
       let firstError: unknown = null
+      // byte counters sit beside the part counters: a part in flight for
+      // tens of seconds moves bytes the whole time, and the bars follow
+      let doneBytes = 0
+      const inflight = new Map<number, number>()
+      const syncBytes = () => {
+        let moving = 0
+        inflight.forEach((v) => (moving += v))
+        const row = state.perFile[i]
+        if (row) row.sentBytes = doneBytes + moving
+      }
       const send = async (partNumber: number, partToken: string): Promise<void> => {
         const part = parts[partNumber - 1]
         if (!part) return
@@ -195,14 +214,25 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
           digest,
           partToken,
           signal,
+          (loaded) => {
+            inflight.set(partNumber, loaded)
+            syncBytes()
+          },
         )
         ;(resp.next_tokens ?? []).forEach((t, j) => tokenMap.set(partNumber + 1 + j, t))
         const row = state.perFile[i]
         if (row) row.sentParts++
+        doneBytes += sealed.ciphertext.byteLength
+        inflight.delete(partNumber)
+        syncBytes()
       }
+      // one part in flight. two split the uplink and crawl together, one
+      // moves steadily and the byte bars follow it. the three token look
+      // ahead on the server side still covers this with room to spare
+      const MAX_IN_FLIGHT = 1
       while (firstError === null && nextPart <= parts.length && !signal.aborted) {
         const inFlight: Array<Promise<void>> = []
-        while (nextPart <= parts.length && tokenMap.has(nextPart) && inFlight.length < 2) {
+        while (nextPart <= parts.length && tokenMap.has(nextPart) && inFlight.length < MAX_IN_FLIGHT) {
           const n = nextPart++
           inFlight.push(send(n, tokenMap.get(n)!).catch((e) => (firstError ??= e)))
         }

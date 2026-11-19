@@ -95,19 +95,45 @@ export async function putPart(
   sha256Hex: string,
   partToken: string,
   signal?: AbortSignal,
+  onProgress?: (loaded: number, total: number) => void,
 ): Promise<{ ok: boolean; next_tokens: string[] }> {
-  const resp = await fetch(`/api/sessions/${sessionID}/parts/${partNumber}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/octet-stream',
-      ...csrfHeaders(csrf),
-      'X-Part-Token': partToken,
-      'X-Part-SHA256': sha256Hex,
-    },
-    body: data,
-    ...(signal ? { signal } : {}),
+  // xhr, not fetch: upload progress is only observable here. a part can
+  // take long enough on a slow link that part level progress reads as
+  // frozen, byte level keeps the bars honest
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', `/api/sessions/${sessionID}/parts/${partNumber}`)
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream')
+    xhr.setRequestHeader('X-CSRF-Token', csrf)
+    xhr.setRequestHeader('X-Part-Token', partToken)
+    xhr.setRequestHeader('X-Part-SHA256', sha256Hex)
+    const onAbort = () => xhr.abort()
+    signal?.addEventListener('abort', onAbort, { once: true })
+    xhr.upload.onprogress = (ev) => {
+      if (ev.lengthComputable) onProgress?.(ev.loaded, ev.total)
+    }
+    xhr.onload = () => {
+      let body: unknown
+      try {
+        body = JSON.parse(xhr.responseText)
+      } catch {
+        reject(new Error(`http_${xhr.status}`))
+        return
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        const code =
+          body && typeof body === 'object' && 'error' in body && typeof body.error === 'string'
+            ? body.error
+            : `http_${xhr.status}`
+        reject(new Error(code))
+        return
+      }
+      resolve(body as { ok: boolean; next_tokens: string[] })
+    }
+    xhr.onerror = () => reject(new Error('network'))
+    xhr.onabort = () => reject(new Error('aborted'))
+    xhr.send(data)
   })
-  return json(resp)
 }
 
 export async function completeSession(
