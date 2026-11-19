@@ -25,10 +25,9 @@ type createRequest struct {
 		PartSize      int   `json:"part_size"`
 		ExpectedParts int   `json:"expected_parts"`
 	} `json:"files"`
-	ExpiryMode   string `json:"expiry_mode"`
-	ExpiryDays   int    `json:"expiry_days"`
-	NotifyWanted bool   `json:"notify_wanted"`
-	NotifyEmail  string `json:"notify_email"`
+	ExpiryMode  string `json:"expiry_mode"`
+	ExpiryDays  int    `json:"expiry_days"`
+	NotifyEmail string `json:"notify_email"`
 }
 
 type createResponse struct {
@@ -525,14 +524,13 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := s.store.FinalizeShare(r.Context(), id, sqlite.Blobs{TitleCT: title, ManifestCT: manifest, CheckCT: check})
+	// the hash rides the same transaction as the blobs, a fail open
+	// window between two writes would leave the share keyless wipeable
+	err := s.store.FinalizeShare(r.Context(), id, sqlite.Blobs{
+		TitleCT: title, ManifestCT: manifest, CheckCT: check, CheckSHA: req.CheckSHA,
+	})
 	switch {
 	case err == nil:
-		if req.CheckSHA != "" {
-			if serr := s.store.SetCheckSHA(r.Context(), id, req.CheckSHA); serr != nil {
-				s.log.Error("save check hash", "err", serr)
-			}
-		}
 		if ierr := s.store.InsertEvent(r.Context(), id, "finalised", s.clientIP(r), "", r.UserAgent(), blobTotal); ierr != nil {
 			s.log.Error("event", "err", ierr)
 		}

@@ -285,9 +285,14 @@ func parseByteRange(v string) (start, end int64, ok bool) {
 	return start, end, true
 }
 
-// validEmail is a shape check, not a deliverability claim. The mailer
-// reports real failures when the send runs.
+// validEmail is a shape and character screen, not a deliverability
+// claim. The address reaches a raw smtp envelope and a raw To header, so
+// anything with space, control flow, or header punctuation is refused
+// outright, the mailer reports real failures when the send runs.
 func validEmail(addr string) bool {
+	if strings.ContainsAny(addr, " \t\r\n<>()\",;:") {
+		return false
+	}
 	at := strings.IndexByte(addr, '@')
 	if at <= 0 || at == len(addr)-1 {
 		return false

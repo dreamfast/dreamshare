@@ -449,6 +449,27 @@ func TestNotifyStoredEmail(t *testing.T) {
 	}
 }
 
+func TestNotifyBurnShareQueuesMail(t *testing.T) {
+	rg := newRig(t, nil)
+	// the default recommended mode, the flip and the mail must both land
+	shareID, _, csrf := rg.uploadShareOpt([]int64{1000}, "burn_on_ack", "owner@example.com")
+	fid := rg.fileIDFor(shareID, 0)
+
+	b, _ := json.Marshal(map[string]any{"verified": true, "file_id": fid})
+	resp := rg.do("POST", "/api/shares/"+shareID+"/ack", b, csrf)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("burn ack: %d", resp.StatusCode)
+	}
+	_, sid, to, ok, err := rg.store.NotifyDue(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("notify due after burn flip: ok=%v err=%v", ok, err)
+	}
+	if sid != shareID || to != "owner@example.com" {
+		t.Fatalf("burn notify row = %s %s, want the stored owner address", sid, to)
+	}
+}
+
 func TestAckProofRequired(t *testing.T) {
 	rg := newRig(t, nil)
 	shareID, _, csrf := rg.uploadShare([]int64{1000}, "burn_on_ack")

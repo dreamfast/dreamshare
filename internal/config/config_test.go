@@ -1,6 +1,7 @@
 package config
 
 import (
+	"maps"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -255,5 +256,34 @@ func TestUnknownEnvValuesFallBackNotFail(t *testing.T) {
 	c := mustLoad(t, validEnv(map[string]string{"TOMBSTONE_HOURS": "banana"}))
 	if c.Limits.TombstoneHours != 24 {
 		t.Fatalf("garbage input should fall back to the default, got %d", c.Limits.TombstoneHours)
+	}
+}
+
+func TestCloudflareRangesGuard(t *testing.T) {
+	base := map[string]string{
+		"APP_ENV": "dev", "TURNSTILE_MODE": "disabled",
+		"B2_ENDPOINT": "http://localhost:9000", "B2_REGION": "us-west-002",
+		"B2_BUCKET": "dreamshare", "B2_KEY_ID": "kid", "B2_APPLICATION_KEY": "application-key-16",
+	}
+	for name, raw := range map[string]string{
+		"whole ipv4 internet": "0.0.0.0/0",
+		"whole ipv6 internet": "::/0",
+		"garbage":             "not-a-cidr",
+	} {
+		env := maps.Clone(base)
+		env["CLOUDFLARE_RANGES"] = raw
+		_, err := Load(TestEnv(env))
+		if err == nil {
+			t.Fatalf("%s override accepted: %s", name, raw)
+		}
+	}
+	good := maps.Clone(base)
+	good["CLOUDFLARE_RANGES"] = "203.0.113.0/24,2001:db8::/32"
+	cfg, err := Load(TestEnv(good))
+	if err != nil {
+		t.Fatalf("valid override refused: %v", err)
+	}
+	if len(cfg.CloudflareRanges) != 2 {
+		t.Fatalf("override not applied, %d ranges", len(cfg.CloudflareRanges))
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -198,9 +199,12 @@ func Load(getenv Env) (*Config, error) {
 	c.CloudflareRanges = defaultCloudflareRanges
 	if raw := getenv("CLOUDFLARE_RANGES"); raw != "" {
 		over, oerr := parseCIDRs(raw)
-		if oerr != nil || len(over) == 0 {
+		switch {
+		case oerr != nil || len(over) == 0:
 			errs = append(errs, fmt.Errorf("CLOUDFLARE_RANGES must be a comma list of CIDRs"))
-		} else {
+		case slices.ContainsFunc(over, func(p netip.Prefix) bool { return p.Bits() == 0 }):
+			errs = append(errs, fmt.Errorf("CLOUDFLARE_RANGES must not contain the whole internet, a /0 is a spoofing hole"))
+		default:
 			c.CloudflareRanges = over
 		}
 	}

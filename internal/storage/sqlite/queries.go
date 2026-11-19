@@ -251,6 +251,7 @@ type Blobs struct {
 	TitleCT    []byte
 	ManifestCT []byte
 	CheckCT    []byte
+	CheckSHA   string
 }
 
 // FinalizeShare flips pending to active and stores the sealed blobs. It is
@@ -308,9 +309,9 @@ func (s *Store) FinalizeShare(ctx context.Context, shareID string, blobs Blobs) 
 	_ = expectedParts
 
 	res, err := tx.ExecContext(ctx, `update shares set
-		title_ct = ?, manifest_ct = ?, check_ct = ?, status = 'active'
+		title_ct = ?, manifest_ct = ?, check_ct = ?, check_sha256 = ?, status = 'active'
 		where id = ? and status = 'pending'`,
-		blobs.TitleCT, blobs.ManifestCT, blobs.CheckCT, shareID)
+		blobs.TitleCT, blobs.ManifestCT, blobs.CheckCT, nullString(blobs.CheckSHA), shareID)
 	if err != nil {
 		return err
 	}
@@ -397,7 +398,7 @@ func (s *Store) AckFile(ctx context.Context, shareID, fileID string) (bool, erro
 		}
 	}
 
-	res, err := tx.ExecContext(ctx, `update shares set status = 'delivered', acked_at = ?, terminal_at = ?, notify_email = null
+	res, err := tx.ExecContext(ctx, `update shares set status = 'delivered', acked_at = ?, terminal_at = ?
 		where id = ? and status = 'active' and acked_at is null
 		and expires_at > ?
 		and expiry_mode = 'burn_on_ack'
@@ -533,7 +534,15 @@ func (s *Store) RevokeByManagerToken(ctx context.Context, tokenHash string) (sha
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrNotFound
 	}
-	return shareID, err
+	if err != nil {
+		return "", err
+	}
+	// an unsent mail about a dead share is noise, the address goes now
+	if _, derr := s.Writer.ExecContext(ctx,
+		`delete from outbox where share_id = ? and sent_at is null`, shareID); derr != nil {
+		return shareID, derr
+	}
+	return shareID, nil
 }
 
 // ShareIDByManagerHash resolves a manager link to its share id without
@@ -567,7 +576,18 @@ func (s *Store) ExpireDue(ctx context.Context, now time.Time) ([]string, error) 
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close()
+	// expiry takes the queued mail with it, same promise as revoke
+	for _, id := range ids {
+		if _, derr := s.Writer.ExecContext(ctx,
+			`delete from outbox where share_id = ? and sent_at is null`, id); derr != nil {
+			return ids, derr
+		}
+	}
+	return ids, nil
 }
 
 // VersionRef is the storage identity of one stored file: the object key and
