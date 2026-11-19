@@ -330,7 +330,7 @@ const totalSize = computed(() => (manifest.value?.files ?? []).reduce((n, f) => 
                   <line x1="12" y1="15" x2="12" y2="3" />
                 </svg>
                 <span v-else class="dl-spin" aria-hidden="true"></span>
-                <template v-if="fileStates[f.id] === 'verified'">Verified, get again</template>
+                <template v-if="fileStates[f.id] === 'verified'">Verified</template>
                 <template v-else-if="fileStates[f.id] === 'downloading'">Fetching…</template>
                 <template v-else-if="fileStates[f.id] === 'verifying'">Verifying…</template>
                 <template v-else-if="fileStates[f.id] === 'failed'">Failed, retry</template>
