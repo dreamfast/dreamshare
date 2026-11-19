@@ -409,7 +409,10 @@ function submit() {
             </div>
 
             <label class="field">
-              <span class="field-label">Notify me on download <span class="opt">optional</span></span>
+              <span class="field-label">
+                Notify me on download
+                <span class="opt">optional, we hold the address only until the mail is sent</span>
+              </span>
               <span class="email-wrap">
                 <svg
                   class="email-icon"

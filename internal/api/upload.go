@@ -28,6 +28,7 @@ type createRequest struct {
 	ExpiryMode   string `json:"expiry_mode"`
 	ExpiryDays   int    `json:"expiry_days"`
 	NotifyWanted bool   `json:"notify_wanted"`
+	NotifyEmail  string `json:"notify_email"`
 }
 
 type createResponse struct {
@@ -153,7 +154,20 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		CreatedUA:        r.UserAgent(),
 		ChunkSecret:      chunkSecret,
 		SessionTTL:       24 * time.Hour,
+		NotifyEmail:      req.NotifyEmail,
 	}
+	// the address is stored in the clear by design, disclosed in the
+	// privacy copy, and leaves with the share. encrypted at rest would be
+	// theatre beside the plaintext it becomes in smtp logs
+	if req.NotifyEmail != "" && !validEmail(req.NotifyEmail) {
+		writeError(w, http.StatusBadRequest, "bad_address")
+		return
+	}
+	if len(req.NotifyEmail) > 254 {
+		writeError(w, http.StatusBadRequest, "bad_address")
+		return
+	}
+
 	ym := time.Now().Format("0601")
 	var sessions []uploadSessionView
 	for i, f := range req.Files {
@@ -463,6 +477,7 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		TitleCT    string `json:"title_ct"`
 		ManifestCT string `json:"manifest_ct"`
 		CheckCT    string `json:"check_ct"`
+		CheckSHA   string `json:"check_sha256"`
 	}
 	if err := decodeJSON(w, r, blobsMax, &req); err != nil {
 		return
@@ -477,6 +492,21 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	if len(check) != int(s.cfg.Limits.CheckCTBytes) {
 		writeError(w, http.StatusBadRequest, "check_size")
 		return
+	}
+	// the hash of the sealed check verifier, 64 lowercase hex or absent
+	// for a legacy client. when present the ack must prove it can decrypt
+	// the check, which is the only thing standing between a bare share id
+	// and wiping the share
+	req.CheckSHA = strings.ToLower(strings.TrimSpace(req.CheckSHA))
+	if req.CheckSHA != "" {
+		if len(req.CheckSHA) != 64 {
+			writeError(w, http.StatusBadRequest, "check_hash")
+			return
+		}
+		if _, herr := hex.DecodeString(req.CheckSHA); herr != nil {
+			writeError(w, http.StatusBadRequest, "check_hash")
+			return
+		}
 	}
 
 	// the blobs are sqlite storage, they meter against the same daily quota
@@ -498,6 +528,11 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	err := s.store.FinalizeShare(r.Context(), id, sqlite.Blobs{TitleCT: title, ManifestCT: manifest, CheckCT: check})
 	switch {
 	case err == nil:
+		if req.CheckSHA != "" {
+			if serr := s.store.SetCheckSHA(r.Context(), id, req.CheckSHA); serr != nil {
+				s.log.Error("save check hash", "err", serr)
+			}
+		}
 		if ierr := s.store.InsertEvent(r.Context(), id, "finalised", s.clientIP(r), "", r.UserAgent(), blobTotal); ierr != nil {
 			s.log.Error("event", "err", ierr)
 		}

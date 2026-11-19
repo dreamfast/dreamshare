@@ -22,7 +22,6 @@ export interface Manifest {
   title: string
   body: string
   files: ManifestFile[]
-  notify_email?: string
 }
 
 function toB64(bytes: Uint8Array): string {
@@ -62,14 +61,19 @@ export async function sealManifest(
   masterKey: Uint8Array,
   shareID: string,
   manifest: Manifest,
-): Promise<{ manifestCt: Uint8Array; titleCt: Uint8Array; checkCt: Uint8Array }> {
+): Promise<{
+  manifestCt: Uint8Array
+  titleCt: Uint8Array
+  checkCt: Uint8Array
+  checkVerifier: Uint8Array
+}> {
   const json = new TextEncoder().encode(JSON.stringify(manifest))
   const manifestCt = await sealBlob(masterKey, shareID, 'manifest', json)
   const titleCt = await sealBlob(masterKey, shareID, 'title', new TextEncoder().encode(manifest.title))
   // the check verifier is 16 fresh random bytes, fixed 45 byte blob
   const verifier = globalThis.crypto.getRandomValues(new Uint8Array(16))
   const checkCt = await sealBlob(masterKey, shareID, 'check', verifier)
-  return { manifestCt, titleCt, checkCt }
+  return { manifestCt, titleCt, checkCt, checkVerifier: verifier }
 }
 
 export async function openManifest(
@@ -81,16 +85,19 @@ export async function openManifest(
   return JSON.parse(new TextDecoder().decode(json)) as Manifest
 }
 
-export async function tryCheck(
+// openCheck returns the verifier bytes to a key holder, null to anyone
+// else. the hash of these bytes is the ack proof, so a wrong key both
+// fails here and cannot wipe the share later.
+export async function openCheck(
   masterKey: Uint8Array,
   shareID: string,
   checkCt: Uint8Array,
-): Promise<boolean> {
+): Promise<Uint8Array | null> {
   try {
     const opened = await openBlob(masterKey, shareID, 'check', checkCt)
-    return opened.length === 16
+    return opened.length === 16 ? opened : null
   } catch {
-    return false
+    return null
   }
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { generateMasterKey } from '../crypto/frame'
-import { sealManifest, openManifest, tryCheck } from './manifest'
+import { sealManifest, openManifest, openCheck } from './manifest'
 
 describe('manifest', () => {
   it('round trips with the title and files inside', async () => {
@@ -31,8 +31,8 @@ describe('manifest', () => {
     const other = generateMasterKey()
     const shareID = 'mshare0000000000000000'
     const blobs = await sealManifest(master, shareID, { title: 't', body: '', files: [] })
-    expect(await tryCheck(master, shareID, blobs.checkCt)).toBe(true)
-    expect(await tryCheck(other, shareID, blobs.checkCt)).toBe(false)
+    expect(await openCheck(master, shareID, blobs.checkCt)).not.toBeNull()
+    expect(await openCheck(other, shareID, blobs.checkCt)).toBeNull()
   })
 
   it('a wrong share id fails to open the manifest', async () => {

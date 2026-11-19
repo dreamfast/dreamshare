@@ -7,12 +7,11 @@ import {
   fetchCheck,
   downloadFile,
   ackFile,
-  notifyDownloaded,
   csrfCookie,
   type ShareMeta,
 } from '../lib/api'
 import { decodeFragmentKey, openStream, deriveSubkey, subkeyInfo } from '../crypto/frame'
-import { openManifest, tryCheck, type Manifest, type ManifestFile } from '../lib/manifest'
+import { openManifest, openCheck, type Manifest, type ManifestFile } from '../lib/manifest'
 import { renderBody } from '../lib/markdown'
 import { safeName } from '../lib/safename'
 
@@ -28,6 +27,8 @@ const previews = ref<Record<string, string>>({})
 const bodyHtml = ref('')
 
 let masterKey: Uint8Array | null = null
+// filled once the check opens, every ack carries it as the key proof
+let checkProof = ''
 
 // display names lose control and bidi override characters, the fake.jpg.exe
 // direction trick lives there
@@ -41,7 +42,7 @@ onMounted(async () => {
     return
   }
   try {
-    // the ack and notify mutations need the csrf pair, mint it up front
+    // the ack mutation needs the csrf pair, mint it up front
     await bootstrap()
     meta.value = await shareMeta(token.value)
     if (meta.value.status !== 'active') {
@@ -49,9 +50,16 @@ onMounted(async () => {
       return
     }
     const checkCt = await fetchCheck(token.value)
-    if (checkCt && !(await tryCheck(masterKey, token.value, checkCt))) {
-      state.value = 'badkey'
-      return
+    if (checkCt) {
+      const verifier = await openCheck(masterKey, token.value, checkCt)
+      if (!verifier) {
+        state.value = 'badkey'
+        return
+      }
+      const digest = await crypto.subtle.digest('SHA-256', verifier.buffer as ArrayBuffer)
+      checkProof = Array.from(new Uint8Array(digest))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('')
     }
     // the manifest arrives as its own fetch once decryptable, here it is
     // embedded in the share metadata response for v1
@@ -115,8 +123,7 @@ async function download(f: ManifestFile) {
     // give the engine a beat before revoking, an immediate revoke can cut
     // the save short on some engines
     setTimeout(() => URL.revokeObjectURL(url), 30_000)
-    await ackFile(csrfCookie(), token.value, f.id)
-    await notify()
+    await ackFile(csrfCookie(), token.value, f.id, checkProof)
     maybeWiped()
   } catch {
     fileStates.value[f.id] = 'failed'
@@ -124,8 +131,7 @@ async function download(f: ManifestFile) {
 }
 
 async function confirmBody() {
-  await ackFile(csrfCookie(), token.value, null)
-  await notify()
+  await ackFile(csrfCookie(), token.value, null, checkProof)
   maybeWiped()
 }
 
@@ -136,16 +142,6 @@ function maybeWiped() {
   }
   if (manifest.value && manifest.value.files.length === 0 && meta.value?.expiry_mode === 'burn_on_ack') {
     state.value = 'wiped'
-  }
-}
-
-async function notify() {
-  const to = manifest.value?.notify_email
-  if (!to) return
-  try {
-    await notifyDownloaded(csrfCookie(), token.value, to)
-  } catch {
-    // best effort by design
   }
 }
 

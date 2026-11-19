@@ -117,6 +117,10 @@ func (rg *rig) bootstrap() map[string]string {
 // uploadShare drives a full upload for n files of the given ciphertext
 // sizes and returns the share id, the manager token and the csrf headers.
 func (rg *rig) uploadShare(files []int64, expiryMode string) (string, string, map[string]string) {
+	return rg.uploadShareOpt(files, expiryMode, "")
+}
+
+func (rg *rig) uploadShareOpt(files []int64, expiryMode, notifyEmail string) (string, string, map[string]string) {
 	rg.t.Helper()
 	csrf := rg.bootstrap()
 
@@ -128,9 +132,13 @@ func (rg *rig) uploadShare(files []int64, expiryMode string) (string, string, ma
 			"size": size, "frame_count": parts, "frame_size": 1 << 20, "part_size": 1 << 20, "expected_parts": parts,
 		})
 	}
-	body, _ := json.Marshal(map[string]any{
+	create := map[string]any{
 		"files": fileList, "expiry_mode": expiryMode, "expiry_days": 1,
-	})
+	}
+	if notifyEmail != "" {
+		create["notify_email"] = notifyEmail
+	}
+	body, _ := json.Marshal(create)
 	resp := rg.do("POST", "/api/shares", body, csrf)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusCreated {
@@ -402,20 +410,84 @@ func TestTurnstileFailClosed(t *testing.T) {
 	}
 }
 
-func TestNotifyThrottle(t *testing.T) {
+func TestNotifyStoredEmail(t *testing.T) {
 	rg := newRig(t, nil)
-	shareID, _, csrf := rg.uploadShare(nil, "burn_on_ack")
-	send := func() int {
-		b, _ := json.Marshal(map[string]string{"to": "owner@example.com"})
-		resp := rg.do("POST", "/api/shares/"+shareID+"/notify", b, csrf)
+	shareID, _, csrf := rg.uploadShareOpt([]int64{1000}, "ttl", "owner@example.com")
+
+	b, _ := json.Marshal(map[string]any{"verified": true})
+	resp := rg.do("POST", "/api/shares/"+shareID+"/ack", b, csrf)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ack with stored notify: %d", resp.StatusCode)
+	}
+
+	// exactly one outbox row for the stored address
+	rowID, sid, to, ok, err := rg.store.NotifyDue(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("notify due: ok=%v err=%v", ok, err)
+	}
+	if sid != shareID || to != "owner@example.com" {
+		t.Fatalf("notify row = %s %s, want the stored owner address", sid, to)
+	}
+	if err := rg.store.NotifySent(t.Context(), rowID); err != nil {
+		t.Fatal(err)
+	}
+
+	// the address left with the mail, a second ack finds nothing to send
+	email, err := rg.store.ShareNotifyEmail(t.Context(), shareID)
+	if err != nil || email != "" {
+		t.Fatalf("stored address = %q err=%v, want it cleared after the mail", email, err)
+	}
+	resp2 := rg.do("POST", "/api/shares/"+shareID+"/ack", b, csrf)
+	_, _ = io.Copy(io.Discard, resp2.Body)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("second ack: %d", resp2.StatusCode)
+	}
+	_, _, _, ok2, _ := rg.store.NotifyDue(t.Context())
+	if ok2 {
+		t.Fatal("a second ack must not queue a second mail")
+	}
+}
+
+func TestAckProofRequired(t *testing.T) {
+	rg := newRig(t, nil)
+	shareID, _, csrf := rg.uploadShare([]int64{1000}, "burn_on_ack")
+
+	// the finalise time verifier hash, set through the same call the
+	// handler makes
+	want := strings.Repeat("ab", 32)
+	if err := rg.store.SetCheckSHA(t.Context(), shareID, want); err != nil {
+		t.Fatal(err)
+	}
+
+	ack := func(proof string) int {
+		b, _ := json.Marshal(map[string]any{"verified": true, "proof": proof})
+		resp := rg.do("POST", "/api/shares/"+shareID+"/ack", b, csrf)
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return resp.StatusCode
 	}
-	if got := send(); got != 200 {
-		t.Fatalf("first notify: %d", got)
+	if got := ack(""); got != http.StatusForbidden {
+		t.Fatalf("ack without proof: %d", got)
 	}
-	if got := send(); got != http.StatusTooManyRequests {
-		t.Fatalf("second notify: %d", got)
+	if got := ack(strings.Repeat("cd", 32)); got != http.StatusForbidden {
+		t.Fatalf("ack with wrong proof: %d", got)
+	}
+	// the share survived the keyless attempts
+	sh, err := rg.store.GetShare(t.Context(), shareID)
+	if err != nil || sh.Status == "wiped" || sh.Status == "delivered" {
+		t.Fatalf("share state after refused acks: %s err=%v", sh.Status, err)
+	}
+	if got := ack(want); got != http.StatusOK {
+		t.Fatalf("ack with the verifier hash: %d", got)
+	}
+
+	// a legacy share finalised before the proof existed still acks
+	legacyID, _, _ := rg.uploadShare([]int64{1000}, "burn_on_ack")
+	b, _ := json.Marshal(map[string]any{"verified": true})
+	resp := rg.do("POST", "/api/shares/"+legacyID+"/ack", b, csrf)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("legacy ack without proof: %d", resp.StatusCode)
 	}
 }
 

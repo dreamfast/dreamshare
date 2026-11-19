@@ -58,6 +58,7 @@ type NewShare struct {
 	CreatedUA        string
 	ChunkSecret      []byte
 	SessionTTL       time.Duration
+	NotifyEmail      string
 	Files            []NewFile
 }
 
@@ -78,11 +79,13 @@ func (s *Store) CreateShare(ctx context.Context, ns NewShare) error {
 	_, err = tx.ExecContext(ctx, `insert into shares(
 		id, format_version, file_count, total_bytes, expiry_mode, expires_at,
 		max_attempts, manager_token_hash, turnstile_ok,
-		created_ip, created_country, created_asn, created_ua, created_at, status)
-		values(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending')`,
+		created_ip, created_country, created_asn, created_ua, created_at, status,
+		notify_email)
+		values(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`,
 		ns.ID, ns.FormatVersion, ns.FileCount, ns.TotalBytes, ns.ExpiryMode,
 		ns.ExpiresAt.Unix(), ns.MaxAttempts, nullString(ns.ManagerTokenHash), turnstile,
-		ns.CreatedIP, ns.CreatedCountry, ns.CreatedASN, ns.CreatedUA, now)
+		ns.CreatedIP, ns.CreatedCountry, ns.CreatedASN, ns.CreatedUA, now,
+		nullString(ns.NotifyEmail))
 	if err != nil {
 		return fmt.Errorf("insert share: %w", err)
 	}
@@ -394,7 +397,7 @@ func (s *Store) AckFile(ctx context.Context, shareID, fileID string) (bool, erro
 		}
 	}
 
-	res, err := tx.ExecContext(ctx, `update shares set status = 'delivered', acked_at = ?, terminal_at = ?
+	res, err := tx.ExecContext(ctx, `update shares set status = 'delivered', acked_at = ?, terminal_at = ?, notify_email = null
 		where id = ? and status = 'active' and acked_at is null
 		and expires_at > ?
 		and expiry_mode = 'burn_on_ack'
@@ -411,6 +414,51 @@ func (s *Store) AckFile(ctx context.Context, shareID, fileID string) (bool, erro
 		return true, tx.Commit()
 	}
 	return false, tx.Commit()
+}
+
+// ShareNotifyEmail reads the stored notify address, empty when the share
+// has none or already sent it.
+func (s *Store) ShareNotifyEmail(ctx context.Context, shareID string) (string, error) {
+	var addr sql.NullString
+	err := s.Reader.QueryRowContext(ctx,
+		`select notify_email from shares where id = ?`, shareID).Scan(&addr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return addr.String, nil
+}
+
+// ClearNotifyEmail drops the stored address after the notification is
+// queued, the retention promise is one mail then nothing.
+func (s *Store) ClearNotifyEmail(ctx context.Context, shareID string) error {
+	_, err := s.Writer.ExecContext(ctx,
+		`update shares set notify_email = null where id = ?`, shareID)
+	return err
+}
+
+// SetCheckSHA stores the finalise time hash of the check verifier. Its
+// presence turns the ack proof from optional to required.
+func (s *Store) SetCheckSHA(ctx context.Context, shareID, hash string) error {
+	_, err := s.Writer.ExecContext(ctx,
+		`update shares set check_sha256 = ? where id = ?`, hash, shareID)
+	return err
+}
+
+// CheckSHA reads the stored verifier hash, empty for legacy shares.
+func (s *Store) CheckSHA(ctx context.Context, shareID string) (string, error) {
+	var hash sql.NullString
+	err := s.Reader.QueryRowContext(ctx,
+		`select check_sha256 from shares where id = ?`, shareID).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	return hash.String, nil
 }
 
 // NotifyEnqueue inserts one outbox row. The partial unique index makes a
@@ -479,7 +527,7 @@ func (s *Store) NotifyFailed(ctx context.Context, id int64, sendErr string) erro
 // database leak grants no revoke rights.
 func (s *Store) RevokeByManagerToken(ctx context.Context, tokenHash string) (shareID string, err error) {
 	err = s.Writer.QueryRowContext(ctx,
-		`update shares set status = 'revoked', terminal_at = ?
+		`update shares set status = 'revoked', terminal_at = ?, notify_email = null
 		where manager_token_hash = ? and status in ('pending','active','delivered') returning id`,
 		time.Now().Unix(), tokenHash).Scan(&shareID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -504,7 +552,7 @@ func (s *Store) ShareIDByManagerHash(ctx context.Context, tokenHash string) (str
 // their ids. The caller deletes the B2 versions.
 func (s *Store) ExpireDue(ctx context.Context, now time.Time) ([]string, error) {
 	rows, err := s.Writer.QueryContext(ctx,
-		`update shares set status = 'expired', terminal_at = ?
+		`update shares set status = 'expired', terminal_at = ?, notify_email = null
 		where status in ('pending','active') and expires_at <= ? returning id`,
 		now.Unix(), now.Unix())
 	if err != nil {

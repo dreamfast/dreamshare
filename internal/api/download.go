@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -283,8 +285,21 @@ func parseByteRange(v string) (start, end int64, ok bool) {
 	return start, end, true
 }
 
-// handleAck records a verified decrypt. The browser asserts it, the server
-// cannot verify a decryption it cannot see.
+// validEmail is a shape check, not a deliverability claim. The mailer
+// reports real failures when the send runs.
+func validEmail(addr string) bool {
+	at := strings.IndexByte(addr, '@')
+	if at <= 0 || at == len(addr)-1 {
+		return false
+	}
+	dot := strings.LastIndexByte(addr[at:], '.')
+	return dot > 1 && dot < len(addr[at:])-1
+}
+
+// handleAck records a verified decrypt. The proof field carries the hash
+// of the check verifier, which only a holder of the share key can
+// produce, so a bare share id can no longer wipe a burn share. Shares
+// finalised before the field existed keep the old assertion path.
 func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("token")
 	if !token.ValidID(id, 22) {
@@ -294,6 +309,7 @@ func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FileID   *string `json:"file_id"`
 		Verified bool    `json:"verified"`
+		Proof    string  `json:"proof"`
 	}
 	if err := decodeJSON(w, r, 4096, &req); err != nil {
 		return
@@ -301,6 +317,29 @@ func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 	if !req.Verified {
 		writeError(w, http.StatusBadRequest, "not_verified")
 		return
+	}
+	wantSHA, err := s.store.CheckSHA(r.Context(), id)
+	if errors.Is(err, sqlite.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if err != nil {
+		s.log.Error("check sha read", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	if wantSHA != "" {
+		got := strings.ToLower(strings.TrimSpace(req.Proof))
+		if got == "" || len(got) != 64 {
+			writeError(w, http.StatusForbidden, "check_proof")
+			return
+		}
+		gotBytes, derr := hex.DecodeString(got)
+		wantBytes, _ := hex.DecodeString(wantSHA)
+		if derr != nil || subtle.ConstantTimeCompare(gotBytes, wantBytes) != 1 {
+			writeError(w, http.StatusForbidden, "check_proof")
+			return
+		}
 	}
 	fileID := ""
 	if req.FileID != nil {
@@ -320,6 +359,19 @@ func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
+	// the sender address is server stored since create, the mail goes to
+	// it once and the address is gone. no client supplied address exists
+	// anywhere in the flow
+	if email, nerr := s.store.ShareNotifyEmail(r.Context(), id); nerr == nil && email != "" {
+		if qerr := s.store.NotifyEnqueue(r.Context(), id, email, time.Hour); qerr != nil &&
+			!errors.Is(qerr, sqlite.ErrNotifyThrottled) {
+			s.log.Error("notify enqueue", "err", qerr)
+		} else if qerr == nil {
+			if cerr := s.store.ClearNotifyEmail(r.Context(), id); cerr != nil {
+				s.log.Error("notify address clear", "err", cerr)
+			}
+		}
+	}
 	if flipped {
 		ip := s.clientIP(r)
 		if err := s.store.InsertEvent(r.Context(), id, "ack", ip, "", r.UserAgent(), 0); err != nil {
@@ -328,50 +380,6 @@ func (s *Server) handleAck(w http.ResponseWriter, r *http.Request) {
 		s.wipeAsync(r.Context(), id)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-// handleNotify takes the sender address the recipient browser decrypted and
-// queues the plain text mail. The mail never contains the link.
-func (s *Server) handleNotify(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("token")
-	if !token.ValidID(id, 22) {
-		writeError(w, http.StatusNotFound, "not_found")
-		return
-	}
-	var req struct {
-		To string `json:"to"`
-	}
-	if err := decodeJSON(w, r, 4096, &req); err != nil {
-		return
-	}
-	if !validEmail(req.To) {
-		writeError(w, http.StatusBadRequest, "bad_address")
-		return
-	}
-	if err := s.store.NotifyEnqueue(r.Context(), id, req.To, time.Hour); err != nil {
-		if errors.Is(err, sqlite.ErrNotifyThrottled) {
-			writeError(w, http.StatusTooManyRequests, "throttled")
-			return
-		}
-		s.log.Error("notify", "err", err)
-		writeError(w, http.StatusInternalServerError, "internal")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
-}
-
-func validEmail(v string) bool {
-	if len(v) < 3 || len(v) > 254 {
-		return false
-	}
-	at := strings.IndexByte(v, '@')
-	if at < 1 || at == len(v)-1 {
-		return false
-	}
-	if strings.ContainsAny(v, " \t\r\n<>)(\"") {
-		return false
-	}
-	return true
 }
 
 // handleRevoke revokes by manager token header.

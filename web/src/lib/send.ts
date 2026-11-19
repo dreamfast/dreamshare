@@ -142,7 +142,7 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
         })),
         expiry_mode: draft.expiryMode,
         expiry_days: draft.expiryDays,
-        notify_wanted: draft.notifyEmail.trim() !== '',
+        ...(draft.notifyEmail.trim() !== '' ? { notify_email: draft.notifyEmail.trim() } : {}),
       },
       turnstileToken,
       signal,
@@ -257,8 +257,9 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
       title: draft.title,
       body: draft.body,
       files: manifestFiles,
-      ...(draft.notifyEmail.trim() !== '' ? { notify_email: draft.notifyEmail.trim() } : {}),
     })
+    // the hash of the check verifier binds the ack to key possession
+    const checkSHA = await sha256Hex(blobs.checkVerifier.slice().buffer as ArrayBuffer)
     await finalizeShare(
       csrf,
       created.share_id,
@@ -266,6 +267,7 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
         title_ct: toB64(blobs.titleCt),
         manifest_ct: toB64(blobs.manifestCt),
         check_ct: toB64(blobs.checkCt),
+        check_sha256: checkSHA,
       },
       signal,
     )

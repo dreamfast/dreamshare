@@ -16,6 +16,10 @@ For each share, while it exists:
 - Browser and OS, for support and bot detection
 - File sizes and counts, for capacity
 - Encrypted content, which nobody can read, including us
+- If you ask for a download notification, the email address you typed,
+  so we can send that one mail. It is not encrypted at rest, it is
+  deleted the moment the mail is sent or the share ends, and it is the
+  only thing we can read
 
 ## When it goes away
 

@@ -68,7 +68,7 @@ export async function createShare(
     files: Array<{ size: number; frame_count: number; frame_size: number; part_size: number }>
     expiry_mode: string
     expiry_days: number
-    notify_wanted: boolean
+    notify_email?: string
   },
   turnstileToken?: string,
   signal?: AbortSignal,
@@ -154,7 +154,7 @@ export async function completeSession(
 export async function finalizeShare(
   csrf: string,
   shareID: string,
-  blobs: { title_ct: string; manifest_ct: string; check_ct: string },
+  blobs: { title_ct: string; manifest_ct: string; check_ct: string; check_sha256: string },
   signal?: AbortSignal,
 ): Promise<void> {
   const resp = await fetch(`/api/shares/${shareID}/finalize`, {
@@ -193,20 +193,16 @@ export async function downloadFile(token: string, fileID: string): Promise<Uint8
   return new Uint8Array(await resp.arrayBuffer())
 }
 
-export async function ackFile(csrf: string, token: string, fileID: string | null): Promise<void> {
+export async function ackFile(
+  csrf: string,
+  token: string,
+  fileID: string | null,
+  proof: string,
+): Promise<void> {
   const resp = await fetch(`/api/shares/${token}/ack`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...csrfHeaders(csrf) },
-    body: JSON.stringify({ file_id: fileID, verified: true }),
-  })
-  await json(resp)
-}
-
-export async function notifyDownloaded(csrf: string, token: string, to: string): Promise<void> {
-  const resp = await fetch(`/api/shares/${token}/notify`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...csrfHeaders(csrf) },
-    body: JSON.stringify({ to }),
+    body: JSON.stringify({ file_id: fileID, verified: true, proof }),
   })
   await json(resp)
 }
