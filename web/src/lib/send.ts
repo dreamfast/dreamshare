@@ -112,16 +112,26 @@ export function savedProgress(): SendProgress | null {
 // adopt a saved run after a reload: the visitor re picks the files, they
 // match by name and size, and the run continues where it stopped
 export function adoptProgress(p: SendProgress, files: File[]): string {
-  const unmatched = [...files]
-  for (const sess of p.sessions) {
-    if (sess.done) continue
-    const idx = unmatched.findIndex((f) => f.name === sess.fileName && f.size === sess.fileSize)
-    if (idx === -1) return `pick ${sess.fileName} again, same size, to continue`
-    unmatched.splice(idx, 1)
-  }
+  const byKey = new Map(files.map((f) => [`${f.name}|${f.size}`, f]))
+  // files go back in SESSION order, a different pick order must never
+  // pair a file with another session's part plan. done sessions get a
+  // placeholder, their bytes are already stored and their manifest entry
+  // already carries the hash.
+  let orderErr = ''
+  const ordered: File[] = p.sessions.map((sess) => {
+    if (sess.done) return new File([], sess.fileName, { type: sess.fileType })
+    const match = byKey.get(`${sess.fileName}|${sess.fileSize}`)
+    if (!match) {
+      orderErr = `pick ${sess.fileName} again, same size, to continue`
+      return new File([], sess.fileName)
+    }
+    byKey.delete(`${sess.fileName}|${sess.fileSize}`)
+    return match
+  })
+  if (orderErr !== '') return orderErr
   state.progress = p
   state.shareId = p.shareId
-  state.files = files
+  state.files = ordered
   // the manifest seal needs the draft, the passphrase is spent into the
   // working key and never needed again
   state.draft = { ...p.draft, passphrase: '' }
@@ -153,6 +163,7 @@ export function sendState() {
 // from here. needsToken parks the run until the view supplies a human
 // check token
 export function stageSend(draft: SendDraft, files: File[], info: BootstrapInfo): void {
+  clearProgress()
   state.enforced = info.turnstile.enforced
   state.draft = draft
   state.files = files
@@ -186,6 +197,8 @@ export function cancelSend(): void {
 }
 
 function resetSend(): void {
+  // cancel means abandon, the saved run must not hijack the next one
+  clearProgress()
   running = false
   state.phase = 'idle'
   state.draft = null
@@ -226,7 +239,18 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
       // a continuation: the share exists, the key exists, pick up the
       // parts where they stopped
       master = fromB64(state.progress.workingKeyB64)
-      staged = state.files.map((f) => ({ file: f, parts: planParts(f.size, chunk) }))
+      // the persisted plan is the truth, a placeholder size must never
+      // re-plan a done session into different offsets
+      staged = state.progress.sessions.map((sess) => ({
+        file:
+          state.files.find((f) => f.name === sess.fileName && f.size === sess.fileSize) ??
+          new File([], sess.fileName),
+        parts: sess.parts.map((pt) => ({
+          number: pt.number,
+          offset: pt.offset,
+          plaintextLength: pt.plaintextLength,
+        })),
+      }))
       created = {
         share_id: state.progress.shareId,
         manager_token: state.progress.managerToken,

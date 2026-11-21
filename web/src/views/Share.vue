@@ -738,6 +738,7 @@ h1 {
 }
 
 .file-row {
+  flex-wrap: wrap;
   display: flex;
   gap: 0.9rem;
   align-items: center;
@@ -752,7 +753,7 @@ h1 {
 }
 
 .preview-slot {
-  grid-column: 1 / -1;
+  flex-basis: 100%;
   margin-top: 0.35rem;
 }
 

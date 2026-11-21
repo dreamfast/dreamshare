@@ -550,6 +550,39 @@ func TestFinalizeCarriesCheckHash(t *testing.T) {
 	}
 }
 
+func TestManagerInsight(t *testing.T) {
+	rg := newRig(t, nil)
+	shareID, mgr, _ := rg.uploadShare([]int64{1000}, "ttl")
+
+	resp := rg.do("GET", "/api/m/"+mgr+"/insight", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("insight: %d", resp.StatusCode)
+	}
+	var body struct {
+		Status     string `json:"status"`
+		FileCount  int    `json:"file_count"`
+		Downloads  int    `json:"downloads"`
+		ExpiryMode string `json:"expiry_mode"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "active" || body.FileCount != 1 || body.ExpiryMode != "ttl" {
+		t.Fatalf("insight body = %+v", body)
+	}
+	// created and finalised events exist, downloads start at zero
+	if body.Downloads != 0 {
+		t.Fatalf("downloads = %d on a fresh share", body.Downloads)
+	}
+	// a wrong token answers the same not found as everywhere else
+	resp2 := rg.do("GET", "/api/m/"+"x"+strings.Repeat("a", 31)+"/insight", nil, nil)
+	_, _ = io.Copy(io.Discard, resp2.Body)
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("insight with a bad token: %d", resp2.StatusCode)
+	}
+	_ = shareID
+}
+
 func TestManagerGetNeverRevokes(t *testing.T) {
 	rg := newRig(t, nil)
 	shareID, mgr, _ := rg.uploadShare([]int64{1000}, "burn_on_ack")

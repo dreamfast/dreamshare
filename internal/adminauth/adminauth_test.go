@@ -183,6 +183,9 @@ func TestTOTPEnrolmentRoundTrip(t *testing.T) {
 	if err := svc.EnsureAdmin(ctx, "admin-1", "root@example.com", "hash:hunter2"); err != nil {
 		t.Fatal(err)
 	}
+	if err := svc.SetSealKey(make([]byte, 32)); err != nil {
+		t.Fatal(err)
+	}
 
 	if svc.HasTOTP(ctx, "root@example.com") {
 		t.Fatal("fresh admin must not have the factor")

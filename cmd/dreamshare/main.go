@@ -126,6 +126,12 @@ func run() error {
 			Attempts: cfg.Admin.LockoutAttempts,
 			LockMins: cfg.Admin.LockoutMinutes,
 		}, cfg.Admin.SessionIdleMins, cfg.Admin.SessionAbsMins)
+		if k := os.Getenv("ADMIN_ENC_KEY"); k != "" {
+			if err := auth.SetSealKey([]byte(k)); err != nil {
+				slog.Error("admin seal key", "err", err)
+				return err
+			}
+		}
 		server.SetAdmin(auth, allow)
 		if flagSetAdminPassword() {
 			return runSetAdminPassword(auth)

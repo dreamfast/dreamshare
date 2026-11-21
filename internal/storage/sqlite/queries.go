@@ -494,19 +494,19 @@ func (s *Store) CheckSHA(ctx context.Context, shareID string) (string, error) {
 // EventCounts groups the event kinds the sender receipt shows.
 func (s *Store) EventCounts(ctx context.Context, shareID string) (map[string]int, error) {
 	rows, err := s.Reader.QueryContext(ctx,
-		`select kind, count(*) from events where share_id = ? group by kind`, shareID)
+		`select event, count(*) from share_events where share_id = ? group by event`, shareID)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := map[string]int{}
 	for rows.Next() {
-		var kind string
+		var event string
 		var n int
-		if err := rows.Scan(&kind, &n); err != nil {
+		if err := rows.Scan(&event, &n); err != nil {
 			return nil, err
 		}
-		out[kind] = n
+		out[event] = n
 	}
 	return out, rows.Err()
 }

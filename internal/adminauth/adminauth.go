@@ -7,6 +7,8 @@ package adminauth
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -88,6 +90,8 @@ type Service struct {
 	absMins  int
 	verify   Verifier
 	nowFunc  func() time.Time
+	// seals the totp secret at rest, nil until SetSealKey
+	sealKey []byte
 }
 
 // LockoutConfig bounds the guess rate.
@@ -171,10 +175,15 @@ func (s *Service) ConfirmTOTP(ctx context.Context, email, password, secret, code
 		return ErrDenied
 	}
 	if !totp.Validate(code, secret) {
+		_ = s.checkAndRecord(ctx, email, true, id)
 		return ErrDenied
 	}
+	sealed, serr := s.sealSecret(secret)
+	if serr != nil {
+		return serr
+	}
 	_, err = s.store.Writer.ExecContext(ctx,
-		"update admin_users set totp_secret_ct = ? where id = ?", secret, id)
+		"update admin_users set totp_secret_ct = ? where id = ?", sealed, id)
 	return err
 }
 
@@ -243,6 +252,17 @@ func (s *Service) Login(ctx context.Context, remoteIP, email, password, totpCode
 		return "", ErrDenied
 	}
 	if totpSecret.Valid {
+		if !strings.HasPrefix(totpSecret.String, "plaintext:") {
+			opened, oerr := s.openSecret(totpSecret.String)
+			if oerr != nil {
+				// a sealed secret without its key is unusable, fail closed
+				return "", ErrDenied
+			}
+			totpSecret.String = opened
+		} else {
+			// a row written before sealing existed, readable as-is
+			totpSecret.String = strings.TrimPrefix(totpSecret.String, "plaintext:")
+		}
 		if totpCode == "" {
 			return "", ErrDenied
 		}
@@ -397,6 +417,69 @@ func sha256hex(v string) string {
 // counting wraps the verifier with a counter for the allowlist-before-auth
 // test, proving argon2 is never reached when the allowlist denies first.
 var verifyCount int64
+
+// SetSealKey arms at-rest sealing for the totp secret. The key is 32
+// bytes raw or base64 from the operator environment. Enrolment refuses
+// without it and login cannot validate a sealed secret without it.
+func (s *Service) SetSealKey(key []byte) error {
+	if len(key) == 32 {
+		s.sealKey = key
+		return nil
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(key))); err == nil && len(decoded) == 32 {
+		s.sealKey = decoded
+		return nil
+	}
+	return errors.New("seal key must be 32 bytes raw or base64")
+}
+
+// sealSecret seals with aes gcm under the env key, nonce prefixed.
+func (s *Service) sealSecret(plain string) (string, error) {
+	if len(s.sealKey) != 32 {
+		return "", errors.New("ADMIN_ENC_KEY is not set, cannot enrol the authenticator")
+	}
+	block, err := aes.NewCipher(s.sealKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	sealed := gcm.Seal(nonce, nonce, []byte(plain), nil)
+	return base64.StdEncoding.EncodeToString(sealed), nil
+}
+
+// openSecret undoes sealSecret, an absent key or wrong key both fail.
+func (s *Service) openSecret(sealed string) (string, error) {
+	if len(s.sealKey) != 32 {
+		return "", errors.New("ADMIN_ENC_KEY is not set")
+	}
+	raw, err := base64.StdEncoding.DecodeString(sealed)
+	if err != nil {
+		return "", err
+	}
+	block, err := aes.NewCipher(s.sealKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	if len(raw) < gcm.NonceSize() {
+		return "", errors.New("short sealed secret")
+	}
+	plain, err := gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], nil)
+	if err != nil {
+		return "", err
+	}
+	return string(plain), nil
+}
 
 // SetVerify swaps the password verifier, the admin api tests use it.
 func (s *Service) SetVerify(v Verifier) { s.verify = v }
