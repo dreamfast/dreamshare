@@ -38,3 +38,8 @@ describe('renderBody', () => {
     expect(renderBody('')).toBe('')
   })
 })
+
+it('renders strikethrough through the sanitiser', () => {
+  const out = renderBody('~~gone~~ stays')
+  expect(out).toContain('<s>gone</s>')
+})

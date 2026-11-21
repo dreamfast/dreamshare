@@ -217,10 +217,12 @@ async function filesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
       const file = await new Promise<File | null>((res) => fe.file(res, () => res(null)))
       if (!file || file.size === 0) return
       const rel = prefix + file.name
+      // rune cap, a utf16 slice can split a surrogate pair
+      const relCapped = prefix === '' ? file.name : Array.from(rel).slice(0, 200).join('')
       out.push(
         prefix === ''
           ? file
-          : new File([file], rel.slice(0, 200), { type: file.type, lastModified: file.lastModified }),
+          : new File([file], relCapped, { type: file.type, lastModified: file.lastModified }),
       )
       return
     }

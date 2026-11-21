@@ -240,6 +240,7 @@ const totalSize = computed(() => (manifest.value?.files ?? []).reduce((n, f) => 
             v-model="passInput"
             type="password"
             :disabled="passBusy"
+            autocomplete="off"
             placeholder="Password"
             aria-label="Share password"
             autofocus

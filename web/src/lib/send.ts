@@ -124,7 +124,8 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
     let kdf: { salt: string; iters: number } | undefined
     if (draft.passphrase !== '') {
       const salt = globalThis.crypto.getRandomValues(new Uint8Array(16))
-      const iters = 310_000
+      // owasp aligned, the server accepts up to five million
+      const iters = 600_000
       master = await deriveWorkingKey(rawMaster, draft.passphrase, salt, iters)
       kdf = { salt: toB64(salt), iters }
     }

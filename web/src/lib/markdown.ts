@@ -38,6 +38,7 @@ export function renderBody(markdown: string): string {
       'strong',
       'em',
       'del',
+      's',
       'code',
       'pre',
       'ul',

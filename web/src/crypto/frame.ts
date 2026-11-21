@@ -35,7 +35,8 @@ export async function deriveSubkey(master: Uint8Array, info: string): Promise<Cr
 /**
  * The working key for passphrase protected shares. The passphrase is
  * stretched with PBKDF2, then mixed into the fragment key through HKDF:
- * working = HKDF(ikm = master, salt = PBKDF2(passphrase), info = ds1).
+ * working = HKDF(ikm = master, salt = PBKDF2(passphrase),
+ * info = dreamshare:passphrase).
  * Without a passphrase the caller uses the master key untouched, so the
  * two modes share every seal and open path below this line. The server
  * holds only the public parameters, salt and iteration count.
