@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   bootstrap,
@@ -24,6 +24,37 @@ const meta = ref<ShareMeta | null>(null)
 const manifest = ref<Manifest | null>(null)
 const fileStates = ref<Record<string, 'idle' | 'downloading' | 'verifying' | 'verified' | 'failed'>>({})
 const previews = ref<Record<string, string>>({})
+// inline players and text bodies, keyed like the image thumbs
+const mediaPreviews = ref<Record<string, { kind: 'video' | 'audio'; url: string }>>({})
+const textPreviews = ref<Record<string, string>>({})
+// verified plaintext under a size cap, the share sheet serves from here
+const decrypted = ref<Record<string, Uint8Array>>({})
+const DECRYPT_CACHE_MAX = 64 * 1024 * 1024
+
+function previewKind(mime: string, size: number): 'image' | 'video' | 'audio' | 'text' | null {
+  if (mime.startsWith('image/') && size <= 8 * 1024 * 1024) return 'image'
+  if (mime.startsWith('video/') && size <= 128 * 1024 * 1024) return 'video'
+  if (mime.startsWith('audio/') && size <= 32 * 1024 * 1024) return 'audio'
+  if ((mime.startsWith('text/') || mime === 'application/json') && size <= 256 * 1024) return 'text'
+  return null
+}
+
+function canShareFile(f: ManifestFile): boolean {
+  if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') return false
+  return fileStates.value[f.id] === 'verified' && decrypted.value[f.id] !== undefined
+}
+
+async function shareFile(f: ManifestFile): Promise<void> {
+  const plain = decrypted.value[f.id]
+  if (!plain) return
+  const file = new File([plain.slice().buffer as ArrayBuffer], safeName(f.name), { type: f.mime })
+  if (!navigator.canShare({ files: [file] })) return
+  try {
+    await navigator.share({ files: [file], title: safeName(f.name) })
+  } catch {
+    // a cancelled share sheet is not an error worth a screen
+  }
+}
 const bodyHtml = ref('')
 
 let masterKey: Uint8Array | null = null
@@ -32,6 +63,11 @@ let checkProof = ''
 
 // display names lose control and bidi override characters, the fake.jpg.exe
 // direction trick lives there
+
+onUnmounted(() => {
+  for (const url of Object.values(previews.value)) URL.revokeObjectURL(url)
+  for (const m of Object.values(mediaPreviews.value)) URL.revokeObjectURL(m.url)
+})
 
 onMounted(async () => {
   try {
@@ -127,15 +163,22 @@ async function finishLoad(): Promise<void> {
     bodyHtml.value = renderBody(manifest.value.body ?? '')
     for (const f of manifest.value.files) {
       fileStates.value[f.id] = 'idle'
-      if (f.mime.startsWith('image/') && f.size <= 8 * 1024 * 1024) {
-        try {
-          const subkey = await deriveSubkey(key, subkeyInfo('file', f.id))
-          const ct = await downloadFile(token.value, f.id)
-          const plain = await openStream(subkey, ct, 0n, token.value, 'file')
-          previews.value[f.id] = URL.createObjectURL(new Blob([plain.slice().buffer], { type: f.mime }))
-        } catch {
-          // a preview is best effort, the download button still works
+      const kind = previewKind(f.mime, f.size)
+      if (kind === null) continue
+      try {
+        const subkey = await deriveSubkey(key, subkeyInfo('file', f.id))
+        const ct = await downloadFile(token.value, f.id)
+        const plain = await openStream(subkey, ct, 0n, token.value, 'file')
+        const blob = new Blob([plain.slice().buffer as ArrayBuffer], { type: f.mime })
+        if (kind === 'image') {
+          previews.value[f.id] = URL.createObjectURL(blob)
+        } else if (kind === 'video' || kind === 'audio') {
+          mediaPreviews.value[f.id] = { kind, url: URL.createObjectURL(blob) }
+        } else {
+          textPreviews.value[f.id] = new TextDecoder().decode(plain.slice().buffer).slice(0, 4096)
         }
+      } catch {
+        // a preview is best effort, the download button still works
       }
     }
     state.value = 'ready'
@@ -158,6 +201,7 @@ async function download(f: ManifestFile) {
     const ct = await downloadFile(token.value, f.id)
     fileStates.value[f.id] = 'verifying'
     const plain = await openStream(subkey, ct, 0n, token.value, 'file')
+    if (f.size <= DECRYPT_CACHE_MAX) decrypted.value[f.id] = plain.slice()
     const digest = await crypto.subtle.digest('SHA-256', plain.buffer as ArrayBuffer)
     const hex = Array.from(new Uint8Array(digest))
       .map((b) => b.toString(16).padStart(2, '0'))
@@ -375,6 +419,29 @@ const totalSize = computed(() => (manifest.value?.files ?? []).reduce((n, f) => 
                 </span>
               </span>
               <button
+                v-if="canShareFile(f)"
+                type="button"
+                class="dl share-btn"
+                :aria-label="`Share ${safeName(f.name)} to an app`"
+                @click="shareFile(f)"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <circle cx="18" cy="5" r="3" />
+                  <circle cx="6" cy="12" r="3" />
+                  <circle cx="18" cy="19" r="3" />
+                  <line x1="8.6" y1="10.5" x2="15.4" y2="6.5" />
+                  <line x1="8.6" y1="13.5" x2="15.4" y2="17.5" />
+                </svg>
+              </button>
+              <button
                 type="button"
                 class="dl"
                 :class="{
@@ -419,6 +486,25 @@ const totalSize = computed(() => (manifest.value?.files ?? []).reduce((n, f) => 
                 <template v-else-if="fileStates[f.id] === 'failed'">Failed, retry</template>
                 <template v-else>Download</template>
               </button>
+              <div
+                v-if="mediaPreviews[f.id] || textPreviews[f.id]"
+                class="preview-slot"
+                :class="{ text: textPreviews[f.id] }"
+              >
+                <video
+                  v-if="mediaPreviews[f.id]?.kind === 'video'"
+                  :src="mediaPreviews[f.id]?.url"
+                  controls
+                  preload="metadata"
+                ></video>
+                <audio
+                  v-else-if="mediaPreviews[f.id]?.kind === 'audio'"
+                  :src="mediaPreviews[f.id]?.url"
+                  controls
+                  preload="metadata"
+                ></audio>
+                <pre v-else-if="textPreviews[f.id]" class="text-body">{{ textPreviews[f.id] }}</pre>
+              </div>
             </li>
           </ul>
         </div>
@@ -663,6 +749,42 @@ h1 {
 
 .file-row:hover {
   background: var(--surface-mid);
+}
+
+.preview-slot {
+  grid-column: 1 / -1;
+  margin-top: 0.35rem;
+}
+
+.preview-slot video {
+  width: 100%;
+  border-radius: 10px;
+  background: #000;
+  max-height: 22rem;
+}
+
+.preview-slot audio {
+  width: 100%;
+  height: 40px;
+}
+
+.preview-slot .text-body {
+  margin: 0;
+  padding: 0.8rem 0.95rem;
+  background: var(--surface-low, #f1f3fa);
+  border: 1px solid var(--outline-soft);
+  border-radius: 10px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 16rem;
+  overflow-y: auto;
+}
+
+.share-btn {
+  margin-right: 0.35rem;
 }
 
 .thumb-wrap {

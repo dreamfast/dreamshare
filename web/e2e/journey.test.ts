@@ -37,11 +37,19 @@ test('upload to wipe', async ({ page, browser }) => {
 
   await page.getByLabel('title').fill('e2e contract')
   await page.locator('#share-message').fill('hello **recipient**')
-  await page.locator('input.file-input').setInputFiles({
-    name: 'notes.txt',
-    mimeType: 'text/plain',
-    buffer: Buffer.from('dreamshare end to end payload'),
-  })
+  await page.locator('input.file-input').setInputFiles([
+    {
+      name: 'notes.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('dreamshare end to end payload'),
+    },
+    {
+      name: 'voice-note.mp3',
+      mimeType: 'audio/mpeg',
+      // not a real mp3, the element only needs bytes to point at
+      buffer: Buffer.alloc(2048, 1),
+    },
+  ])
   await page.getByRole('button', { name: 'Share', exact: true }).click()
 
   // the sending room owns the run: recap visible, then the success view
@@ -67,9 +75,20 @@ test('upload to wipe', async ({ page, browser }) => {
   await expect(rec.getByRole('heading', { name: 'e2e contract' })).toBeVisible()
   await expect(rec.getByText('recipient')).toBeVisible()
   await expect(rec.getByText('notes.txt')).toBeVisible()
+  // inline previews: the text body renders, the audio gets a player
+  await expect(rec.locator('.text-body')).toContainText('dreamshare end to end payload')
+  // a player with a live blob source, attachment is the contract, the
+  // widget height depends on media metadata we do not fake honestly
+  const audioEl = rec.locator('audio').first()
+  await expect(audioEl).toBeAttached()
+  await expect(audioEl).toHaveAttribute('src', /^blob:/)
 
   const download = rec.waitForEvent('download')
-  await rec.getByRole('button', { name: 'Download', exact: true }).click()
+  await rec
+    .getByRole('listitem')
+    .filter({ hasText: 'notes.txt' })
+    .getByRole('button', { name: 'Download', exact: true })
+    .click()
   const dl = await download
   const stream = await dl.createReadStream()
   const bytes = await new Promise<Buffer>((resolve) => {
@@ -79,6 +98,22 @@ test('upload to wipe', async ({ page, browser }) => {
   })
   expect(bytes.toString('utf8')).toBe('dreamshare end to end payload')
   await expect(rec.getByRole('button', { name: /Verified/ })).toBeVisible({ timeout: 30_000 })
+
+  // a burn share wipes only when every file is acked, take the second one
+  const download2 = rec.waitForEvent('download')
+  await rec
+    .getByRole('listitem')
+    .filter({ hasText: 'voice-note.mp3' })
+    .getByRole('button', { name: 'Download', exact: true })
+    .click()
+  const dl2 = await download2
+  expect(dl2.suggestedFilename()).toBe('voice-note.mp3')
+  await expect(
+    rec
+      .getByRole('listitem')
+      .filter({ hasText: 'voice-note.mp3' })
+      .getByRole('button', { name: 'Verified', exact: true }),
+  ).toBeVisible({ timeout: 30_000 })
 
   // the ack wiped the burn share, reloading the link must say so
   await rec.reload()
