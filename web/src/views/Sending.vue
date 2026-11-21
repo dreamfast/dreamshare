@@ -139,6 +139,69 @@ const bytes = computed(() => ({
   sent: state.perFile.reduce((n, f) => n + f.sentBytes, 0),
   total: state.perFile.reduce((n, f) => n + f.totalBytes, 0),
 }))
+
+// a rolling window over the aggregate byte counter turns the bars into a
+// speed readout, on a slow link the bars crawl but the rate still breathes
+const rate = ref(0)
+let speedTimer: ReturnType<typeof setInterval> | undefined
+const samples: Array<{ t: number; b: number }> = []
+
+function tickSpeed(): void {
+  samples.push({ t: Date.now(), b: bytes.value.sent })
+  while (samples.length > 2 && Date.now() - samples[0]!.t > 4000) samples.shift()
+  if (samples.length < 2) return
+  const first = samples[0]!
+  const last = samples[samples.length - 1]!
+  const dt = (last.t - first.t) / 1000
+  if (dt <= 0.5) return
+  rate.value = Math.max(0, (last.b - first.b) / dt)
+}
+
+watch(
+  () => state.phase,
+  (phase) => {
+    if (phase === 'sending' && speedTimer === undefined) {
+      tickSpeed()
+      speedTimer = setInterval(tickSpeed, 500)
+    } else if (phase !== 'sending' && speedTimer !== undefined) {
+      clearInterval(speedTimer)
+      speedTimer = undefined
+      samples.length = 0
+    }
+  },
+  { immediate: true },
+)
+
+function fmtRate(bps: number): string {
+  if (bps <= 0) return ''
+  if (bps >= 1 << 20) return `${(bps / (1 << 20)).toFixed(1)} MB/s`
+  if (bps >= 1 << 10) return `${(bps / (1 << 10)).toFixed(0)} KB/s`
+  return `${bps.toFixed(0)} B/s`
+}
+
+function fmtEta(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 1) return ''
+  if (sec < 60) return `about ${Math.ceil(sec)}s left`
+  return `about ${Math.ceil(sec / 60)}m left`
+}
+
+const rateLine = computed(() => {
+  if (state.phase !== 'sending') return ''
+  const bits: string[] = []
+  if (bytes.value.total > 0) {
+    bits.push(`${fmtSize(bytes.value.sent)} of ${fmtSize(bytes.value.total)}`)
+  }
+  const r = fmtRate(rate.value)
+  if (r !== '') {
+    bits.push(r)
+    if (bytes.value.total > bytes.value.sent) {
+      const eta = fmtEta((bytes.value.total - bytes.value.sent) / rate.value)
+      if (eta !== '') bits.push(eta)
+    }
+  }
+  if (bits.length === 0) return 'starting…'
+  return bits.join(' · ')
+})
 const pct = computed(() =>
   bytes.value.total === 0
     ? parts.value.total === 0
@@ -193,6 +256,7 @@ onBeforeRouteLeave(() => {
   if (state.phase === 'sending' || state.phase === 'needs-token') cancelSend()
 })
 onUnmounted(() => {
+  if (speedTimer !== undefined) clearInterval(speedTimer)
   window.removeEventListener('keydown', onKey)
   if (state.phase === 'sending' || state.phase === 'needs-token') cancelSend()
   widget?.remove()
@@ -283,6 +347,7 @@ onUnmounted(() => {
         </div>
         <span class="overall-label">{{ parts.done }} / {{ parts.total }} parts</span>
       </div>
+      <p v-if="state.phase === 'sending'" class="rate-line" aria-live="off">{{ rateLine }}</p>
 
       <div class="tray">
         <button
@@ -488,6 +553,13 @@ onUnmounted(() => {
   to {
     background-position: 24px 0;
   }
+}
+
+.rate-line {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: var(--body);
+  font-variant-numeric: tabular-nums;
 }
 
 .overall-label {
