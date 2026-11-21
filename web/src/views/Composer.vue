@@ -16,6 +16,7 @@ const files = ref<File[]>([])
 const title = ref('')
 const body = ref('')
 const notifyEmail = ref('')
+const passphrase = ref('')
 const expiryMode = ref<'burn_on_ack' | 'ttl'>('burn_on_ack')
 const expiryDays = ref(1)
 const error = ref('')
@@ -164,6 +165,7 @@ function submit() {
       title: title.value.trim(),
       body: body.value,
       notifyEmail: notifyEmail.value,
+      passphrase: passphrase.value,
       expiryMode: expiryMode.value,
       expiryDays: expiryDays.value,
     },
@@ -429,6 +431,19 @@ function submit() {
                 </svg>
                 <input v-model="notifyEmail" type="email" placeholder="your@email.com" />
               </span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">
+                Password protect
+                <span class="opt">optional, the recipient needs the link and this password</span>
+              </span>
+              <input
+                v-model="passphrase"
+                type="password"
+                autocomplete="new-password"
+                placeholder="A password you share another way"
+              />
             </label>
 
             <fieldset class="expiry">

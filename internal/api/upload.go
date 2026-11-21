@@ -28,6 +28,12 @@ type createRequest struct {
 	ExpiryMode  string `json:"expiry_mode"`
 	ExpiryDays  int    `json:"expiry_days"`
 	NotifyEmail string `json:"notify_email"`
+	// public kdf parameters for the optional passphrase mode, the
+	// passphrase itself never leaves the browser
+	PassphraseKDF *struct {
+		Salt  string `json:"salt"`
+		Iters int    `json:"iters"`
+	} `json:"passphrase_kdf"`
 }
 
 type createResponse struct {
@@ -142,6 +148,26 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		expiresAt = time.Now().AddDate(0, 0, 7)
 	}
 
+	// public kdf parameters for the optional passphrase mode, the
+	// passphrase itself never leaves the browser
+	hasPass := false
+	kdfSalt := ""
+	kdfIters := 0
+	if req.PassphraseKDF != nil {
+		salt, serr := b64(req.PassphraseKDF.Salt, 64)
+		if serr != nil || len(salt) != 16 {
+			writeError(w, http.StatusBadRequest, "kdf_salt")
+			return
+		}
+		if req.PassphraseKDF.Iters < 100_000 || req.PassphraseKDF.Iters > 5_000_000 {
+			writeError(w, http.StatusBadRequest, "kdf_iters")
+			return
+		}
+		hasPass = true
+		kdfSalt = req.PassphraseKDF.Salt
+		kdfIters = req.PassphraseKDF.Iters
+	}
+
 	ns := sqlite.NewShare{
 		ID: shareID, FormatVersion: "ds1",
 		FileCount: len(req.Files), TotalBytes: total,
@@ -154,6 +180,9 @@ func (s *Server) handleCreateShare(w http.ResponseWriter, r *http.Request) {
 		ChunkSecret:      chunkSecret,
 		SessionTTL:       24 * time.Hour,
 		NotifyEmail:      req.NotifyEmail,
+		HasPassphrase:    hasPass,
+		KDFSalt:          kdfSalt,
+		KDFIters:         kdfIters,
 	}
 	// the address is stored in the clear by design, disclosed in the
 	// privacy copy, and leaves with the share. encrypted at rest would be

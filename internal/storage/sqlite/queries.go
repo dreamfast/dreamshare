@@ -59,6 +59,9 @@ type NewShare struct {
 	ChunkSecret      []byte
 	SessionTTL       time.Duration
 	NotifyEmail      string
+	HasPassphrase    bool
+	KDFSalt          string
+	KDFIters         int
 	Files            []NewFile
 }
 
@@ -80,12 +83,13 @@ func (s *Store) CreateShare(ctx context.Context, ns NewShare) error {
 		id, format_version, file_count, total_bytes, expiry_mode, expires_at,
 		max_attempts, manager_token_hash, turnstile_ok,
 		created_ip, created_country, created_asn, created_ua, created_at, status,
-		notify_email)
-		values(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?)`,
+		notify_email, has_passphrase, kdf_salt, kdf_iters)
+		values(?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'pending', ?, ?, ?, ?)`,
 		ns.ID, ns.FormatVersion, ns.FileCount, ns.TotalBytes, ns.ExpiryMode,
 		ns.ExpiresAt.Unix(), ns.MaxAttempts, nullString(ns.ManagerTokenHash), turnstile,
 		ns.CreatedIP, ns.CreatedCountry, ns.CreatedASN, ns.CreatedUA, now,
-		nullString(ns.NotifyEmail))
+		nullString(ns.NotifyEmail), passFlag(ns.HasPassphrase), nullString(ns.KDFSalt),
+		nullInt(ns.KDFIters))
 	if err != nil {
 		return fmt.Errorf("insert share: %w", err)
 	}
@@ -117,6 +121,20 @@ func nullString(v string) any {
 	return v
 }
 
+func passFlag(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func nullInt(v int) any {
+	if v == 0 {
+		return nil
+	}
+	return v
+}
+
 // Share is the read model for status endpoints and the download gate.
 type Share struct {
 	ID            string
@@ -130,13 +148,20 @@ type Share struct {
 	MaxAttempts   int
 	DownloadsUsed int
 	MaxDownloads  sql.NullInt64
+	HasPassphrase bool
+	KDFSalt       string
+	KDFIters      int
 }
 
 func scanShare(row interface{ Scan(...any) error }) (*Share, error) {
 	var sh Share
 	var expiresAt, ackedAt sql.NullInt64
+	var hasPass int
+	var kdfSalt sql.NullString
+	var kdfIters sql.NullInt64
 	err := row.Scan(&sh.ID, &sh.FormatVersion, &sh.Status, &sh.ExpiryMode, &expiresAt,
-		&ackedAt, &sh.FileCount, &sh.TotalBytes, &sh.MaxAttempts, &sh.DownloadsUsed, &sh.MaxDownloads)
+		&ackedAt, &sh.FileCount, &sh.TotalBytes, &sh.MaxAttempts, &sh.DownloadsUsed, &sh.MaxDownloads,
+		&hasPass, &kdfSalt, &kdfIters)
 	if err != nil {
 		return nil, err
 	}
@@ -144,11 +169,15 @@ func scanShare(row interface{ Scan(...any) error }) (*Share, error) {
 	if ackedAt.Valid {
 		sh.AckedAt = sql.NullTime{Time: time.Unix(ackedAt.Int64, 0), Valid: true}
 	}
+	sh.HasPassphrase = hasPass == 1
+	sh.KDFSalt = kdfSalt.String
+	sh.KDFIters = int(kdfIters.Int64)
 	return &sh, nil
 }
 
 const shareCols = `id, format_version, status, expiry_mode, expires_at, acked_at,
-	file_count, total_bytes, max_attempts, downloads_used, max_downloads`
+	file_count, total_bytes, max_attempts, downloads_used, max_downloads,
+	has_passphrase, kdf_salt, kdf_iters`
 
 // GetShare reads one share by its capability id.
 func (s *Store) GetShare(ctx context.Context, id string) (*Share, error) {

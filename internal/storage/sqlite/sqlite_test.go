@@ -249,8 +249,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := s2.Writer.QueryRowContext(t.Context(), "pragma user_version").Scan(&v); err != nil {
 		t.Fatal(err)
 	}
-	if v != 2 {
-		t.Fatalf("user_version = %d, want 2", v)
+	if v != 3 {
+		t.Fatalf("user_version = %d, want 3", v)
 	}
 
 	var integrity string

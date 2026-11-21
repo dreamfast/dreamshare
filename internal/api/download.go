@@ -34,7 +34,7 @@ func (s *Server) handleGetShare(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"share_id":       sh.ID,
 		"format_version": sh.FormatVersion,
 		"status":         sh.Status,
@@ -42,7 +42,15 @@ func (s *Server) handleGetShare(w http.ResponseWriter, r *http.Request) {
 		"expires_at":     sh.ExpiresAt.Unix(),
 		"file_count":     sh.FileCount,
 		"total_bytes":    sh.TotalBytes,
-	})
+	}
+	// the passphrase gate is public by design, the parameters are not
+	// secrets, they tell the recipient browser how to stretch the input
+	if sh.HasPassphrase {
+		body["has_passphrase"] = true
+		body["kdf_salt"] = sh.KDFSalt
+		body["kdf_iters"] = sh.KDFIters
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // handleCheck serves the key validation blob. It never moves the download

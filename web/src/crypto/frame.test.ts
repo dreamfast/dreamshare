@@ -11,6 +11,7 @@ import {
   aad,
   decodeFragmentKey,
   deriveSubkey,
+  deriveWorkingKey,
   encodeFragmentKey,
   frameSlices,
   generateMasterKey,
@@ -199,5 +200,26 @@ describe('Go interop', () => {
       const opened = await openStream(key, ct, 0n, v.share_id, v.purpose)
       expect(Buffer.from(opened).toString('base64')).toBe(v.plaintext)
     }
+  })
+})
+
+describe('deriveWorkingKey', () => {
+  const master = new Uint8Array(32).fill(7)
+  const salt = new Uint8Array(16).fill(3)
+
+  it('is deterministic for the same inputs', async () => {
+    const a = await deriveWorkingKey(master, 'hunter2', salt, 100_000)
+    const b = await deriveWorkingKey(master, 'hunter2', salt, 100_000)
+    expect(a).toEqual(b)
+    expect(a.length).toBe(32)
+  })
+
+  it('differs per passphrase, per salt and from the raw master', async () => {
+    const base = await deriveWorkingKey(master, 'hunter2', salt, 100_000)
+    const otherPass = await deriveWorkingKey(master, 'hunter3', salt, 100_000)
+    const otherSalt = await deriveWorkingKey(master, 'hunter2', new Uint8Array(16).fill(9), 100_000)
+    expect(Buffer.from(otherPass).equals(Buffer.from(base))).toBe(false)
+    expect(Buffer.from(otherSalt).equals(Buffer.from(base))).toBe(false)
+    expect(Buffer.from(base).equals(Buffer.from(master))).toBe(false)
   })
 })

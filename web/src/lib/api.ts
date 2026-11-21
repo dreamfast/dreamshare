@@ -69,6 +69,7 @@ export async function createShare(
     expiry_mode: string
     expiry_days: number
     notify_email?: string
+    passphrase_kdf?: { salt: string; iters: number }
   },
   turnstileToken?: string,
   signal?: AbortSignal,
@@ -174,6 +175,9 @@ export interface ShareMeta {
   expires_at: number
   file_count: number
   total_bytes: number
+  has_passphrase?: boolean
+  kdf_salt?: string
+  kdf_iters?: number
 }
 
 export async function shareMeta(token: string): Promise<ShareMeta> {

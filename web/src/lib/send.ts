@@ -4,7 +4,7 @@
 import { reactive } from 'vue'
 import { csrfCookie, createShare, putPart, completeSession, finalizeShare, type BootstrapInfo } from './api'
 import { planParts, sealPart, startingIndex, freshNoncePrefix, ciphertextSize } from './pipeline'
-import { generateMasterKey, encodeFragmentKey } from '../crypto/frame'
+import { deriveWorkingKey, generateMasterKey, encodeFragmentKey } from '../crypto/frame'
 import { sealManifest, toB64, type ManifestFile } from './manifest'
 import { saveMineRecord } from './mine'
 
@@ -12,6 +12,7 @@ export interface SendDraft {
   title: string
   body: string
   notifyEmail: string
+  passphrase: string
   expiryMode: 'burn_on_ack' | 'ttl'
   expiryDays: number
 }
@@ -115,8 +116,18 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
   state.phase = 'sending'
   state.error = ''
   try {
-    const master = generateMasterKey()
-    const fragment = encodeFragmentKey(master)
+    const rawMaster = generateMasterKey()
+    const fragment = encodeFragmentKey(rawMaster)
+    // a passphrase mixes into every seal through a working key, the
+    // fragment alone can no longer open the share
+    let master = rawMaster
+    let kdf: { salt: string; iters: number } | undefined
+    if (draft.passphrase !== '') {
+      const salt = globalThis.crypto.getRandomValues(new Uint8Array(16))
+      const iters = 310_000
+      master = await deriveWorkingKey(rawMaster, draft.passphrase, salt, iters)
+      kdf = { salt: toB64(salt), iters }
+    }
     const chunk = info.limits.chunk_max_bytes
     const csrf = csrfCookie()
 
@@ -143,6 +154,7 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
         expiry_mode: draft.expiryMode,
         expiry_days: draft.expiryDays,
         ...(draft.notifyEmail.trim() !== '' ? { notify_email: draft.notifyEmail.trim() } : {}),
+        ...(kdf ? { passphrase_kdf: kdf } : {}),
       },
       turnstileToken,
       signal,

@@ -32,6 +32,40 @@ export async function deriveSubkey(master: Uint8Array, info: string): Promise<Cr
   return globalThis.crypto.subtle.importKey('raw', bits, 'AES-GCM', false, ['encrypt', 'decrypt'])
 }
 
+/**
+ * The working key for passphrase protected shares. The passphrase is
+ * stretched with PBKDF2, then mixed into the fragment key through HKDF:
+ * working = HKDF(ikm = master, salt = PBKDF2(passphrase), info = ds1).
+ * Without a passphrase the caller uses the master key untouched, so the
+ * two modes share every seal and open path below this line. The server
+ * holds only the public parameters, salt and iteration count.
+ */
+export async function deriveWorkingKey(
+  master: Uint8Array,
+  passphrase: string,
+  salt: Uint8Array,
+  iters: number,
+): Promise<Uint8Array> {
+  if (master.length !== KEY_SIZE) {
+    throw new Error(`master key must be ${KEY_SIZE} bytes, got ${master.length}`)
+  }
+  const passBase = await globalThis.crypto.subtle.importKey('raw', buf(utf8(passphrase)), 'PBKDF2', false, [
+    'deriveBits',
+  ])
+  const passBits = await globalThis.crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: buf(salt), iterations: iters },
+    passBase,
+    256,
+  )
+  const hkdfBase = await globalThis.crypto.subtle.importKey('raw', buf(master), 'HKDF', false, ['deriveBits'])
+  const bits = await globalThis.crypto.subtle.deriveBits(
+    { name: 'HKDF', hash: 'SHA-256', salt: passBits, info: buf(utf8('dreamshare:passphrase')) },
+    hkdfBase,
+    256,
+  )
+  return new Uint8Array(bits)
+}
+
 /** Canonical AAD: ds1, share id, purpose, uint64 index, last flag, NUL separated. */
 export function aad(shareID: string, purpose: Purpose, index: bigint, last: boolean): Uint8Array {
   const head = new TextEncoder().encode(`${FORMAT_NAME}\0${shareID}\0${purpose}\0`)

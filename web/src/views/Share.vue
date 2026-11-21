@@ -10,15 +10,15 @@ import {
   csrfCookie,
   type ShareMeta,
 } from '../lib/api'
-import { decodeFragmentKey, openStream, deriveSubkey, subkeyInfo } from '../crypto/frame'
-import { openManifest, openCheck, type Manifest, type ManifestFile } from '../lib/manifest'
+import { decodeFragmentKey, deriveSubkey, deriveWorkingKey, openStream, subkeyInfo } from '../crypto/frame'
+import { openManifest, openCheck, fromB64, type Manifest, type ManifestFile } from '../lib/manifest'
 import { renderBody } from '../lib/markdown'
 import { safeName } from '../lib/safename'
 
 const route = useRoute()
 const token = computed(() => String(route.params.token ?? ''))
 
-const state = ref<'loading' | 'badkey' | 'gone' | 'error' | 'ready' | 'wiped'>('loading')
+const state = ref<'loading' | 'badkey' | 'gone' | 'error' | 'ready' | 'wiped' | 'locked'>('loading')
 const errorMsg = ref('')
 const meta = ref<ShareMeta | null>(null)
 const manifest = ref<Manifest | null>(null)
@@ -49,18 +49,71 @@ onMounted(async () => {
       state.value = 'gone'
       return
     }
-    const checkCt = await fetchCheck(token.value)
-    if (checkCt) {
-      const verifier = await openCheck(masterKey, token.value, checkCt)
-      if (!verifier) {
-        state.value = 'badkey'
+    if (meta.value.has_passphrase && meta.value.kdf_salt && meta.value.kdf_iters) {
+      // the link alone is not enough, pause for the password and mix it
+      // into the key before anything is opened
+      state.value = 'locked'
+      return
+    }
+    await finishLoad()
+  } catch (e) {
+    const msg = (e as Error).message
+    if (msg === 'not_found' || msg === 'gone' || msg.startsWith('http_4') || msg.startsWith('http_5')) {
+      state.value = 'gone'
+    } else {
+      errorMsg.value = msg
+      state.value = 'error'
+    }
+  }
+})
+
+const passInput = ref('')
+const passError = ref('')
+const passBusy = ref(false)
+
+async function unlock() {
+  if (!meta.value?.kdf_salt || !meta.value?.kdf_iters || passBusy.value) return
+  passBusy.value = true
+  passError.value = ''
+  try {
+    const salt = fromB64(meta.value.kdf_salt)
+    const working = await deriveWorkingKey(masterKey!, passInput.value, salt, meta.value.kdf_iters)
+    masterKey = working
+    await finishLoad()
+  } catch {
+    passError.value = 'That password did not open the share. Try again.'
+  } finally {
+    passBusy.value = false
+  }
+}
+
+async function finishLoad(): Promise<void> {
+  const key = masterKey
+  if (!key) {
+    state.value = 'badkey'
+    return
+  }
+  const checkCt = await fetchCheck(token.value)
+  if (checkCt) {
+    const verifier = await openCheck(key, token.value, checkCt)
+    if (!verifier) {
+      if (meta.value?.has_passphrase) {
+        // a wrong passphrase fails exactly like a wrong key here, restore
+        // the fragment key and let the visitor try again
+        masterKey = decodeFragmentKey(decodeURIComponent(location.hash.replace(/^#/, '')))
+        passError.value = 'That password did not open the share. Try again.'
+        state.value = 'locked'
         return
       }
-      const digest = await crypto.subtle.digest('SHA-256', verifier.buffer as ArrayBuffer)
-      checkProof = Array.from(new Uint8Array(digest))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('')
+      state.value = 'badkey'
+      return
     }
+    const digest = await crypto.subtle.digest('SHA-256', verifier.buffer as ArrayBuffer)
+    checkProof = Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+  }
+  try {
     // the manifest arrives as its own fetch once decryptable, here it is
     // embedded in the share metadata response for v1
     const resp = await fetch(`/api/shares/${token.value}/manifest`)
@@ -70,13 +123,13 @@ onMounted(async () => {
       return
     }
     const manifestCt = new Uint8Array(await resp.arrayBuffer())
-    manifest.value = await openManifest(masterKey, token.value, manifestCt)
+    manifest.value = await openManifest(key, token.value, manifestCt)
     bodyHtml.value = renderBody(manifest.value.body ?? '')
     for (const f of manifest.value.files) {
       fileStates.value[f.id] = 'idle'
       if (f.mime.startsWith('image/') && f.size <= 8 * 1024 * 1024) {
         try {
-          const subkey = await deriveSubkey(masterKey, subkeyInfo('file', f.id))
+          const subkey = await deriveSubkey(key, subkeyInfo('file', f.id))
           const ct = await downloadFile(token.value, f.id)
           const plain = await openStream(subkey, ct, 0n, token.value, 'file')
           previews.value[f.id] = URL.createObjectURL(new Blob([plain.slice().buffer], { type: f.mime }))
@@ -95,7 +148,7 @@ onMounted(async () => {
       state.value = 'error'
     }
   }
-})
+}
 
 async function download(f: ManifestFile) {
   if (!masterKey) return
@@ -165,6 +218,39 @@ const totalSize = computed(() => (manifest.value?.files ?? []).reduce((n, f) => 
     </div>
 
     <!-- problem states -->
+    <div v-else-if="state === 'locked'" class="card state-card">
+      <span class="state-icon" aria-hidden="true">
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <rect x="4" y="11" width="16" height="9" rx="2" />
+          <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        </svg>
+      </span>
+      <div>
+        <h2 class="state-heading">This share needs its password</h2>
+        <p class="state-sub">The link alone is not enough. Enter the password you were given.</p>
+        <form class="pass-form" @submit.prevent="unlock()">
+          <input
+            v-model="passInput"
+            type="password"
+            :disabled="passBusy"
+            placeholder="Password"
+            aria-label="Share password"
+            autofocus
+          />
+          <button type="submit" class="btn-primary" :disabled="passBusy">
+            {{ passBusy ? 'Opening…' : 'Open' }}
+          </button>
+        </form>
+        <p v-if="passError" class="pass-error" role="alert">{{ passError }}</p>
+      </div>
+    </div>
     <div v-else-if="state === 'badkey'" class="card state-card" role="alert">
       <span class="state-icon warn-icon" aria-hidden="true">
         <svg
@@ -733,5 +819,28 @@ h1 {
     width: 100%;
     order: 3;
   }
+}
+.pass-form {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+  max-width: 22rem;
+}
+
+.pass-form input {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--outline-soft);
+  border-radius: 10px;
+  font-size: 0.95rem;
+  font-family: inherit;
+  background: var(--card);
+  color: var(--heading);
+}
+
+.pass-error {
+  margin: 0.6rem 0 0;
+  color: var(--danger, #b3261e);
+  font-size: 0.88rem;
 }
 </style>
