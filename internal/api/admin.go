@@ -67,6 +67,62 @@ func (s *Server) mountAdmin(mux *http.ServeMux) {
 		}
 	}
 
+	// the shell of the staff area answers the allowlist and nothing else,
+	// an unlisted address gets the same plain 404 as every other admin
+	// route, the surface never confirms its own existence. the session
+	// check deliberately does not run here, the page hosts the login form
+	guardAllowOnly := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			denyPage := func() {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte("404 page not found\n"))
+			}
+			if s.admin == nil {
+				denyPage()
+				return
+			}
+			ip := net.ParseIP(s.clientIP(r))
+			if ip == nil || !s.adminAllow.Contains(ip) {
+				denyPage()
+				return
+			}
+			next(w, r)
+		}
+	}
+	mux.HandleFunc("GET /admin", guardAllowOnly(spaHandler().ServeHTTP))
+
+	// the session probe is the one route that may answer 401 to an
+	// allowlisted address without a session: the client needs the
+	// difference to know whether to draw a login at all. unlisted
+	// addresses still see the plain 404 like everywhere else
+	guardProbe := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if s.admin == nil {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte("404 page not found\n"))
+				return
+			}
+			ip := net.ParseIP(s.clientIP(r))
+			if ip == nil || !s.adminAllow.Contains(ip) {
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte("404 page not found\n"))
+				return
+			}
+			c, err := r.Cookie(AdminCookie)
+			if err != nil || !s.admin.SessionOK(r.Context(), c.Value) {
+				writeError(w, http.StatusUnauthorized, "session")
+				return
+			}
+			next(w, r)
+		}
+	}
+	mux.HandleFunc("GET /admin/api/session", guardProbe(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	}))
+
 	mux.HandleFunc("POST /admin/login", guard(s.limited(tierCreate, s.handleAdminLogin)))
 	mux.HandleFunc("POST /admin/logout", guard(s.handleAdminLogout))
 	mux.HandleFunc("GET /admin/api/overview", guard(s.handleAdminOverview))

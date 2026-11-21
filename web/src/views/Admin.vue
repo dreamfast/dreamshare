@@ -3,6 +3,7 @@
 // ip allowlist and the session cookie, this view only renders what those
 // endpoints already answer.
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { bootstrap, csrfCookie, type BootstrapInfo } from '../lib/api'
 import { buildThemedQr } from '../lib/qr'
 import { loadTurnstile, renderWidget, type TurnstileHandle } from '../lib/turnstile'
@@ -17,6 +18,9 @@ type Overview = {
   check_fails_24h: number
   db_bytes: number
 }
+
+const router = useRouter()
+const httpStatusNotFound = 404
 
 const email = ref('')
 const password = ref('')
@@ -71,6 +75,7 @@ async function login(): Promise<void> {
       return
     }
     await loadOverview()
+    probe.value = 'authed'
   } catch (e) {
     loginError.value = (e as Error).message
   } finally {
@@ -92,6 +97,7 @@ async function logout(): Promise<void> {
   await post('/admin/logout', {})
   authed.value = false
   overview.value = null
+  probe.value = 'login'
 }
 
 async function beginEnrol(): Promise<void> {
@@ -164,13 +170,24 @@ watch([() => info.value?.turnstile.site_key, authed] as const, ([siteKey, isIn])
     })
 })
 
+// the probe: an unlisted address gets the same 404 as any unknown route
+// and lands home, an allowlisted one sees the login, a session sees the
+// room. the staff area never confirms itself to anyone else
+const probe = ref<'probing' | 'denied' | 'login' | 'authed'>('probing')
+
 onMounted(async () => {
   try {
     info.value = await bootstrap()
   } catch {
     loginError.value = 'cannot reach the server'
   }
-  await loadOverview()
+  const resp = await fetch('/admin/api/session')
+  if (resp.status === httpStatusNotFound) {
+    router.replace('/')
+    return
+  }
+  probe.value = resp.ok ? 'authed' : 'login'
+  if (probe.value === 'authed') await loadOverview()
 })
 
 onUnmounted(() => {
@@ -181,7 +198,7 @@ onUnmounted(() => {
 
 <template>
   <div class="stage">
-    <div v-if="!authed" class="card login-card">
+    <div v-if="probe !== 'authed'" class="card login-card" v-show="probe === 'login'">
       <h1>Staff sign in</h1>
       <p class="sub">The admin area answers only to allowlisted addresses.</p>
       <form @submit.prevent="login()">

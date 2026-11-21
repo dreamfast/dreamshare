@@ -173,7 +173,11 @@ func TestClientIPTrustedProxyRightmostXFF(t *testing.T) {
 func TestAdminByteIdenticalDenyResponses(t *testing.T) {
 	ts, _, _ := adminRig(t)
 	// every admin path without a session returns the same body
-	paths := []string{"/admin/api/overview", "/admin/api/activity", "/admin/api/shares", "/admin/api/nothing"}
+	// the session guarded api routes carry the identical deny. the page
+	// and the session probe answer the allowlist differently on purpose,
+	// the login flow needs the 200 and the 401, TestAdminSurfaceGatedByIP
+	// holds the unlisted side of the contract
+	paths := []string{"/admin/api/overview", "/admin/api/activity", "/admin/api/shares"}
 	var bodies []string
 	for _, p := range paths {
 		req, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+p, nil)

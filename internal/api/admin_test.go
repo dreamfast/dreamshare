@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/dreamfast/dreamshare/internal/adminauth"
@@ -20,6 +22,10 @@ import (
 // adminRig boots the server with the admin area live. The test client IP
 // comes from httptest as 127.0.0.1, which the allowlist includes.
 func adminRig(t *testing.T) (*httptest.Server, *sqlite.Store, *adminauth.Service) {
+	return adminRigEnv(t, nil)
+}
+
+func adminRigEnv(t *testing.T, extra map[string]string) (*httptest.Server, *sqlite.Store, *adminauth.Service) {
 	t.Helper()
 	base := map[string]string{
 		"APP_ENV":            "dev",
@@ -29,6 +35,9 @@ func adminRig(t *testing.T) (*httptest.Server, *sqlite.Store, *adminauth.Service
 		"B2_BUCKET":          "dreamshare",
 		"B2_KEY_ID":          "kid",
 		"B2_APPLICATION_KEY": "application-key-16",
+	}
+	for k, v := range extra {
+		base[k] = v
 	}
 	cfg, err := config.Load(config.TestEnv(base))
 	if err != nil {
@@ -44,6 +53,8 @@ func adminRig(t *testing.T) (*httptest.Server, *sqlite.Store, *adminauth.Service
 	auth := adminauth.NewService(store, adminauth.LockoutConfig{Attempts: 3, LockMins: 15}, 30, 720)
 
 	server := NewServer(cfg, store, objects, nil)
+	// the shell exists for the page route test, one stub index is enough
+	SetSPA(fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>ds</title>")}})
 	prefixes := []netip.Prefix{}
 	for _, c := range []string{"127.0.0.0/8", "::1/128"} {
 		p, err := netip.ParsePrefix(c)
@@ -352,3 +363,66 @@ func TestIPBlockExpiry(t *testing.T) {
 
 // The kill switch: a blocked CIDR refuses requests on public routes, and
 // does not block unrelated addresses.
+
+func TestAdminSurfaceGatedByIP(t *testing.T) {
+	// behind a proxy so the test can choose the client address per request
+	ts, store, auth := adminRigEnv(t, map[string]string{
+		"BEHIND_PROXY":    "true",
+		"TRUSTED_PROXIES": "127.0.0.0/8",
+	})
+	_ = store
+	_ = auth
+	unlisted := func(path string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Forwarded-For", "203.0.113.9")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	// the page, the probe and the api all answer the same plain 404 to an
+	// unlisted address, nothing confirms the staff area exists
+	for _, path := range []string{"/admin", "/admin/api/session", "/admin/api/overview"} {
+		resp := unlisted(path)
+		body := readAll(t, resp)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s unlisted: %d, want 404", path, resp.StatusCode)
+		}
+		if !bytes.Contains(body, []byte("404 page not found")) {
+			t.Fatalf("%s unlisted body confirms the surface: %q", path, body)
+		}
+	}
+
+	// an allowlisted address gets the shell, and the probe answers 401
+	// without a session rather than 404, that difference is the login
+	// signal and it is visible only inside the allowlist
+	page, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/admin", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pageResp, perr := http.DefaultClient.Do(page)
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	defer func() { _ = pageResp.Body.Close() }()
+	if pageResp.StatusCode != http.StatusOK {
+		t.Fatalf("listed /admin: %d, want the spa shell", pageResp.StatusCode)
+	}
+
+	reqS, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/admin/api/session", nil)
+	sessResp, serr := http.DefaultClient.Do(reqS)
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	defer func() { _ = sessResp.Body.Close() }()
+	if sessResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("listed sessionless probe: %d, want 401 so the client may draw a login", sessResp.StatusCode)
+	}
+}
