@@ -5,7 +5,7 @@ test('a passphrase share gates the recipient until the password opens it', async
   await page.getByRole('button', { name: 'New share' }).click()
   await page.getByLabel('title').fill('locked share')
   await page.locator('input[type=password]').first().fill('swordfish')
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('input.file-input').setInputFiles({
     name: 'secret.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from('only with the password'),

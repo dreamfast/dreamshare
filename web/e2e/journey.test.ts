@@ -37,7 +37,7 @@ test('upload to wipe', async ({ page, browser }) => {
 
   await page.getByLabel('title').fill('e2e contract')
   await page.locator('#share-message').fill('hello **recipient**')
-  await page.locator('input[type=file]').setInputFiles({
+  await page.locator('input.file-input').setInputFiles({
     name: 'notes.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from('dreamshare end to end payload'),
@@ -105,7 +105,7 @@ test('multipart across the exact chunk multiple', async ({ page, browser }) => {
   const filler = Buffer.alloc(mib, 7)
   for (let i = 0; i < 30; i++) writeSync(fh, filler)
   closeSync(fh)
-  await page.locator('input[type=file]').setInputFiles(bigPath)
+  await page.locator('input.file-input').setInputFiles(bigPath)
 
   await page.getByRole('button', { name: 'Share', exact: true }).click()
   await expect(page).toHaveURL(/\/sending/)

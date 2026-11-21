@@ -22,6 +22,7 @@ const expiryDays = ref(1)
 const error = ref('')
 const dragOver = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const folderInput = ref<HTMLInputElement | null>(null)
 const titleInput = ref<HTMLInputElement | null>(null)
 const msgInput = ref<HTMLTextAreaElement | null>(null)
 
@@ -85,6 +86,39 @@ function insertLink() {
   applySel(next, a + snippet.length - 8, a + snippet.length - 1)
 }
 
+function lineRange(text: string, a: number, b: number): [number, number] {
+  const start = text.lastIndexOf('\n', a - 1) + 1
+  const endRaw = text.indexOf('\n', b)
+  const end = endRaw === -1 ? text.length : endRaw
+  return [start, end]
+}
+
+// toggles a line prefix over the selection: all lines carry it, strip it,
+// otherwise prepend it
+function toggleLinePrefix(marker: string, pattern: RegExp): void {
+  const el = msgInput.value
+  if (!el) return
+  const { selectionStart: a, selectionEnd: b } = el
+  const text = body.value
+  const [start, end] = lineRange(text, a, b)
+  const lines = text.slice(start, end).split('\n')
+  const all = lines.every((l) => pattern.test(l))
+  const next = lines.map((l) => (all ? l.replace(pattern, '') : marker + l)).join('\n')
+  applySel(text.slice(0, start) + next + text.slice(end), start, start + next.length)
+}
+
+function makeNumberedList() {
+  toggleLinePrefix('1. ', /^\d+\. /)
+}
+
+function makeHeading() {
+  toggleLinePrefix('## ', /^#{1,3} /)
+}
+
+function makeQuote() {
+  toggleLinePrefix('> ', /^> /)
+}
+
 function makeList() {
   const el = msgInput.value
   if (!el) return
@@ -138,18 +172,73 @@ const tooMany = computed(
 )
 const canSubmit = computed(() => title.value.trim() !== '' && !tooBig.value && !tooMany.value)
 
-function pickFiles(list: FileList | null) {
-  if (!list) return
-  for (const f of Array.from(list)) {
+function addFiles(list: File[]) {
+  for (const f of list) {
     if (files.value.length >= (info.value?.limits.max_files_per_share ?? 32)) break
     if (f.size === 0) continue
     files.value.push(f)
   }
 }
 
-function onDrop(ev: DragEvent) {
+function pickFiles(list: FileList | null) {
+  if (!list) return
+  addFiles(Array.from(list))
+}
+
+// a folder pick keeps the relative path in the name, the tree travels
+function pickFolder(list: FileList | null) {
+  if (!list) return
+  const out: File[] = []
+  for (const f of Array.from(list)) {
+    const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath
+    if (rel && rel !== f.name) {
+      out.push(new File([f], rel, { type: f.type, lastModified: f.lastModified }))
+      continue
+    }
+    out.push(f)
+  }
+  addFiles(out)
+}
+
+// drag and drop of directories: walk the entry tree, flatten to paths
+async function filesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
+  const entries: FileSystemEntry[] = []
+  for (const it of Array.from(dt.items)) {
+    const entry = it.webkitGetAsEntry?.()
+    if (entry) entries.push(entry)
+  }
+  if (entries.length === 0) return Array.from(dt.files)
+  const out: File[] = []
+  const cap = info.value?.limits.max_files_per_share ?? 32
+  const walk = async (entry: FileSystemEntry, prefix: string): Promise<void> => {
+    if (out.length >= cap) return
+    if (entry.isFile) {
+      const fe = entry as FileSystemFileEntry
+      const file = await new Promise<File | null>((res) => fe.file(res, () => res(null)))
+      if (!file || file.size === 0) return
+      const rel = prefix + file.name
+      out.push(
+        prefix === ''
+          ? file
+          : new File([file], rel.slice(0, 200), { type: file.type, lastModified: file.lastModified }),
+      )
+      return
+    }
+    const reader = (entry as FileSystemDirectoryEntry).createReader()
+    for (;;) {
+      const batch = await new Promise<FileSystemEntry[]>((res) => reader.readEntries(res, () => res([])))
+      if (batch.length === 0) break
+      for (const e of batch) await walk(e, prefix + entry.name + '/')
+    }
+  }
+  for (const e of entries) await walk(e, '')
+  return out
+}
+
+async function onDrop(ev: DragEvent) {
   dragOver.value = false
-  pickFiles(ev.dataTransfer?.files ?? null)
+  if (!ev.dataTransfer) return
+  addFiles(await filesFromDataTransfer(ev.dataTransfer))
 }
 
 function removeFile(i: number) {
@@ -240,14 +329,26 @@ function submit() {
                 Drop files here
                 <span class="opt">optional</span>
               </p>
-              <p class="drop-sub">Send files, a message, or both.</p>
-              <button type="button" class="browse" @click="fileInput?.click()">or browse</button>
+              <p class="drop-sub">Send files, a message, or both. Folders keep their shape.</p>
+              <span class="browse-row">
+                <button type="button" class="browse" @click="fileInput?.click()">or browse</button>
+                <button type="button" class="browse" @click="folderInput?.click()">or a folder</button>
+              </span>
               <input
                 ref="fileInput"
+                class="file-input"
                 type="file"
                 multiple
                 hidden
                 @change="pickFiles(($event.target as HTMLInputElement).files)"
+              />
+              <input
+                ref="folderInput"
+                type="file"
+                multiple
+                webkitdirectory
+                hidden
+                @change="pickFolder(($event.target as HTMLInputElement).files)"
               />
             </div>
 
@@ -333,79 +434,183 @@ function submit() {
                 </span>
               </div>
               <template v-if="msgMode === 'write'">
-                <div class="md-toolbar" role="toolbar" aria-label="Markdown formatting">
-                  <button
-                    type="button"
-                    class="md-btn"
-                    title="Bold"
-                    aria-label="Bold"
-                    @mousedown.prevent
-                    @click="wrapSel('**')"
-                  >
-                    <strong>B</strong>
-                  </button>
-                  <button
-                    type="button"
-                    class="md-btn"
-                    title="Italic"
-                    aria-label="Italic"
-                    @mousedown.prevent
-                    @click="wrapSel('*')"
-                  >
-                    <em>I</em>
-                  </button>
-                  <button
-                    type="button"
-                    class="md-btn"
-                    title="Link"
-                    aria-label="Link"
-                    @mousedown.prevent
-                    @click="insertLink"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
+                <div class="md-editor">
+                  <div class="md-toolbar" role="toolbar" aria-label="Markdown formatting">
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Bold"
+                      aria-label="Bold"
+                      @mousedown.prevent
+                      @click="wrapSel('**')"
                     >
-                      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                    </svg>
-                  </button>
-                  <button
-                    type="button"
-                    class="md-btn"
-                    title="Bullet list"
-                    aria-label="Bullet list"
-                    @mousedown.prevent
-                    @click="makeList"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.8"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
+                      <strong>B</strong>
+                    </button>
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Italic"
+                      aria-label="Italic"
+                      @mousedown.prevent
+                      @click="wrapSel('*')"
                     >
-                      <line x1="9" y1="6" x2="20" y2="6" />
-                      <line x1="9" y1="12" x2="20" y2="12" />
-                      <line x1="9" y1="18" x2="20" y2="18" />
-                      <circle cx="4.5" cy="6" r="0.6" fill="currentColor" />
-                      <circle cx="4.5" cy="12" r="0.6" fill="currentColor" />
-                      <circle cx="4.5" cy="18" r="0.6" fill="currentColor" />
-                    </svg>
-                  </button>
+                      <em>I</em>
+                    </button>
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Link"
+                      aria-label="Link"
+                      @mousedown.prevent
+                      @click="insertLink"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Bullet list"
+                      aria-label="Bullet list"
+                      @mousedown.prevent
+                      @click="makeList"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <line x1="9" y1="6" x2="20" y2="6" />
+                        <line x1="9" y1="12" x2="20" y2="12" />
+                        <line x1="9" y1="18" x2="20" y2="18" />
+                        <circle cx="4.5" cy="6" r="0.6" fill="currentColor" />
+                        <circle cx="4.5" cy="12" r="0.6" fill="currentColor" />
+                        <circle cx="4.5" cy="18" r="0.6" fill="currentColor" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Numbered list"
+                      aria-label="Numbered list"
+                      @mousedown.prevent
+                      @click="makeNumberedList"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <line x1="9" y1="6" x2="20" y2="6" />
+                        <line x1="9" y1="12" x2="20" y2="12" />
+                        <line x1="9" y1="18" x2="20" y2="18" />
+                        <text x="3" y="7.5" font-size="5.5" fill="currentColor" stroke="none">1</text>
+                        <text x="3" y="13.5" font-size="5.5" fill="currentColor" stroke="none">2</text>
+                        <text x="3" y="19.5" font-size="5.5" fill="currentColor" stroke="none">3</text>
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Heading"
+                      aria-label="Heading"
+                      @mousedown.prevent
+                      @click="makeHeading"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M6 4v16M18 4v16M6 12h12" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Quote"
+                      aria-label="Quote"
+                      @mousedown.prevent
+                      @click="makeQuote"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M3 21c3-2 4-5 4-9V7a4 4 0 0 0-4 4v2h4" />
+                        <path d="M14 21c3-2 4-5 4-9V7a4 4 0 0 0-4 4v2h4" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Code"
+                      aria-label="Inline code"
+                      @mousedown.prevent
+                      @click="wrapSel('\`')"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="m8 6-6 6 6 6M16 6l6 6-6 6" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      class="md-btn"
+                      title="Strikethrough"
+                      aria-label="Strikethrough"
+                      @mousedown.prevent
+                      @click="wrapSel('~~')"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.8"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="M5 12h14" />
+                        <path d="M8 8a4 4 0 0 1 8 0M16 16a4 4 0 0 1-8 0" />
+                      </svg>
+                    </button>
+                  </div>
+                  <textarea
+                    id="share-message"
+                    ref="msgInput"
+                    v-model="body"
+                    rows="4"
+                    placeholder="A note for the recipient"
+                  ></textarea>
                 </div>
-                <textarea
-                  id="share-message"
-                  ref="msgInput"
-                  v-model="body"
-                  rows="4"
-                  placeholder="A note for the recipient"
-                ></textarea>
               </template>
               <div v-else class="msg-preview markdown" v-html="msgPreviewHtml"></div>
             </div>
@@ -725,6 +930,11 @@ function submit() {
   color: var(--on-surface);
 }
 
+.browse-row {
+  display: inline-flex;
+  gap: 0.5rem;
+}
+
 .browse {
   background: transparent;
   border: 1px solid var(--outline-variant);
@@ -971,6 +1181,11 @@ function submit() {
   box-shadow: 0 1px 3px rgba(52, 71, 97, 0.12);
 }
 
+.md-editor {
+  display: flex;
+  flex-direction: column;
+}
+
 .md-toolbar {
   display: flex;
   gap: 4px;
@@ -979,6 +1194,7 @@ function submit() {
   border-bottom: none;
   border-radius: 8px 8px 0 0;
   background: var(--surface-low);
+  flex-wrap: wrap;
 }
 
 .md-btn {

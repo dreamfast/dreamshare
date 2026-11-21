@@ -37,6 +37,7 @@ export function renderBody(markdown: string): string {
       'br',
       'strong',
       'em',
+      'del',
       'code',
       'pre',
       'ul',
