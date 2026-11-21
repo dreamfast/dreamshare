@@ -211,6 +211,20 @@ export async function ackFile(
   await json(resp)
 }
 
+export interface ManagerInsight {
+  status: string
+  expiry_mode: string
+  expires_at: number
+  file_count: number
+  total_bytes: number
+  downloads: number
+}
+
+export async function managerInsight(managerToken: string): Promise<ManagerInsight> {
+  const resp = await fetch(`/api/m/${managerToken}/insight`)
+  return json(resp)
+}
+
 export async function revokeShare(shareID: string, managerToken: string): Promise<void> {
   const resp = await fetch(`/api/shares/${shareID}`, {
     method: 'DELETE',

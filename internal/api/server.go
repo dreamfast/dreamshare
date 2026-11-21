@@ -102,6 +102,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/shares/{token}", s.limited(tierCheck, s.handleRevoke))
 	mux.HandleFunc("GET /m/{token}", s.limited(tierCheck, s.handleManagerPage))
 	mux.HandleFunc("POST /m/{token}", s.limited(tierCheck, s.handleManagerRevoke))
+	mux.HandleFunc("GET /api/m/{token}/insight", s.limited(tierCheck, s.handleManagerInsight))
 
 	// the built SPA with an index fallback: every non api path renders the
 	// router, so /s/<token>#<key> deep links resolve client side

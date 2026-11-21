@@ -415,6 +415,40 @@ func (s *Server) handleRevoke(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleManagerInsight is the sender receipt: counts and state behind the
+// manager token, no addresses, no ips, no per visitor detail.
+func (s *Server) handleManagerInsight(w http.ResponseWriter, r *http.Request) {
+	mgr := r.PathValue("token")
+	if mgr == "" || !token.ValidID(mgr, 32) {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	id, err := s.store.ShareIDByManagerHash(r.Context(), token.HashToken(mgr))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "not_found")
+		return
+	}
+	sh, err := s.store.GetShare(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	counts, err := s.store.EventCounts(r.Context(), id)
+	if err != nil {
+		s.log.Error("event counts", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":      sh.Status,
+		"expiry_mode": sh.ExpiryMode,
+		"expires_at":  sh.ExpiresAt.Unix(),
+		"file_count":  sh.FileCount,
+		"total_bytes": sh.TotalBytes,
+		"downloads":   counts["downloaded"],
+	})
+}
+
 // handleManagerPage is the any device revoke link. GET never revokes, a
 // scanner or prefetch must not be able to kill a share.
 func (s *Server) handleManagerPage(w http.ResponseWriter, r *http.Request) {

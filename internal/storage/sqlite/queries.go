@@ -491,6 +491,26 @@ func (s *Store) CheckSHA(ctx context.Context, shareID string) (string, error) {
 	return hash.String, nil
 }
 
+// EventCounts groups the event kinds the sender receipt shows.
+func (s *Store) EventCounts(ctx context.Context, shareID string) (map[string]int, error) {
+	rows, err := s.Reader.QueryContext(ctx,
+		`select kind, count(*) from events where share_id = ? group by kind`, shareID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]int{}
+	for rows.Next() {
+		var kind string
+		var n int
+		if err := rows.Scan(&kind, &n); err != nil {
+			return nil, err
+		}
+		out[kind] = n
+	}
+	return out, rows.Err()
+}
+
 // NotifyEnqueue inserts one outbox row. The partial unique index makes a
 // second unsent row for the same share and kind fail at the database, which
 // is the notify rate bound no restart can reset.

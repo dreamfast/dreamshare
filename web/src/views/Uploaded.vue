@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+// the sender receipt: live counts behind the manager token, fetched once
+
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { buildThemedQr } from '../lib/qr'
+import { managerInsight, type ManagerInsight } from '../lib/api'
 
 const route = useRoute()
 const handoff = (() => {
@@ -26,6 +29,27 @@ const shareID = computed(() => handoff?.s ?? String(route.query.s ?? ''))
 const fragment = computed(() => handoff?.k ?? '')
 const managerToken = computed(() => handoff?.m ?? '')
 const secretLost = computed(() => shareID.value !== '' && fragment.value === '')
+
+const insight = ref<ManagerInsight | null>(null)
+onMounted(async () => {
+  // best effort, the receipt never blocks the link
+  if (!managerToken.value) return
+  try {
+    insight.value = await managerInsight(managerToken.value)
+  } catch {
+    // the strip stays hidden
+  }
+})
+
+function insightLine(): string {
+  const i = insight.value
+  if (!i) return ''
+  const parts: string[] = []
+  parts.push(i.downloads === 1 ? 'downloaded once' : `downloaded ${i.downloads} times`)
+  if (i.status === 'delivered' || i.status === 'wiped') parts.push('wiped itself')
+  else if (i.expiry_mode === 'ttl') parts.push('stays until it expires')
+  return parts.join(' \u00b7 ')
+}
 const copied = ref(false)
 const copiedRevoke = ref(false)
 
@@ -132,6 +156,7 @@ async function copy(text: string, which: 'link' | 'revoke') {
             </button>
             <span v-if="copied" class="copy-feedback" aria-live="polite">Copied to clipboard</span>
           </div>
+          <p v-if="insight" class="insight-line" role="status">{{ insightLine() }}</p>
         </div>
 
         <!-- qr on the left, plain words on the right -->
@@ -261,6 +286,12 @@ h1 {
 .link-frag {
   color: var(--accent-deep);
   font-weight: 500;
+}
+
+.insight-line {
+  margin: 0.7rem 0 0;
+  font-size: 0.85rem;
+  color: var(--on-surface-variant);
 }
 
 .copy-row {
