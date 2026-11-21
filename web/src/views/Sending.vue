@@ -5,7 +5,16 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { bootstrap, type BootstrapInfo } from '../lib/api'
-import { cancelSend, retrySend, sendStarted, sendState, startSend } from '../lib/send'
+import {
+  adoptProgress,
+  cancelSend,
+  retrySend,
+  savedProgress,
+  sendStarted,
+  sendState,
+  startSend,
+  type SendProgress,
+} from '../lib/send'
 import { loadTurnstile, renderWidget, type TurnstileHandle } from '../lib/turnstile'
 
 const router = useRouter()
@@ -15,10 +24,32 @@ const info = ref<BootstrapInfo | null>(null)
 const turnstileBox = ref<HTMLElement | null>(null)
 let widget: TurnstileHandle | null = null
 
-// nothing staged means a refresh or a direct link: there is no draft to
-// send, go home rather than pretend
+// nothing staged: either a bare visit, or a reload killed an interrupted
+// run whose progress survived. offer the continuation before giving up
+let resumeBlob: SendProgress | null = null
 if (state.phase === 'idle') {
-  router.replace('/')
+  resumeBlob = savedProgress()
+  if (resumeBlob) {
+    state.phase = 'resumable'
+  } else {
+    router.replace('/')
+  }
+}
+
+const resumeError = ref('')
+
+async function onResumePick(ev: Event): Promise<void> {
+  const list = (ev.target as HTMLInputElement).files
+  if (!list || !resumeBlob || !info.value) return
+  const err = adoptProgress(resumeBlob, Array.from(list))
+  resumeError.value = err
+  if (err !== '') return
+  if (!state.enforced) await startSend(info.value, '')
+}
+
+function abandonResume(): void {
+  cancelSend()
+  router.push('/')
 }
 
 // the whole run is observable through the store, the view only reacts
@@ -127,6 +158,12 @@ function fmtSize(n: number): string {
   return `${n} B`
 }
 
+function resumeFilesLine(): string {
+  const names = resumeBlob?.sessions.filter((x) => !x.done).map((x) => x.fileName) ?? []
+  if (names.length === 0) return 'this device'
+  return names.length === 1 ? names[0]! : `${names.length} files`
+}
+
 function goHome() {
   cancelSend()
   router.push('/')
@@ -185,6 +222,21 @@ onUnmounted(() => {
       </div>
 
       <p v-if="state.phase === 'error'" class="error" role="alert">{{ state.error }}</p>
+
+      <div v-if="state.phase === 'resumable'" class="resume-box">
+        <p class="resume-title">An interrupted send can continue</p>
+        <p class="resume-sub">
+          A share from {{ resumeFilesLine() }} was part way through when this page closed. Pick the same
+          file{{ resumeBlob && resumeBlob.sessions.length > 1 ? 's' : '' }} again and the parts already sent
+          are not sent twice.
+        </p>
+        <label class="btn-primary resume-pick">
+          Pick the file{{ resumeBlob && resumeBlob.sessions.length > 1 ? 's' : '' }} again
+          <input type="file" multiple hidden @change="onResumePick($event)" />
+        </label>
+        <p v-if="resumeError" class="error" role="alert">{{ resumeError }}</p>
+        <button type="button" class="btn-ghost" @click="abandonResume()">Start over instead</button>
+      </div>
 
       <div v-if="state.phase === 'needs-token'" ref="turnstileBox" class="ts-box"></div>
 
@@ -442,6 +494,29 @@ onUnmounted(() => {
   color: var(--body);
   font-size: 0.8rem;
   white-space: nowrap;
+}
+
+.resume-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.resume-title {
+  margin: 0;
+  color: var(--heading);
+  font-weight: 600;
+}
+
+.resume-sub {
+  margin: 0;
+  color: var(--body);
+  font-size: 0.9rem;
+}
+
+.resume-pick {
+  align-self: flex-start;
+  cursor: pointer;
 }
 
 .tray {
