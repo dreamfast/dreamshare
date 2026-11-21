@@ -1,8 +1,9 @@
 name: ci
 
+# paused: manual trigger only so pushes stay quiet. flip `on:` back to
+# push and pull_request to resume the automatic gate
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
