@@ -508,8 +508,8 @@ export async function startSend(info: BootstrapInfo, turnstileToken: string): Pr
   }
 }
 
-// a retry is a fresh share: new key, new create, the abandoned half
-// upload is swept by the server inside a day
+// a retry continues the same share when progress exists, the parts
+// already stored carry over, otherwise it mints a fresh share
 export function retrySend(info: BootstrapInfo): void {
   if (!state.draft) return
   state.error = ''

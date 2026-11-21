@@ -252,17 +252,12 @@ func (s *Service) Login(ctx context.Context, remoteIP, email, password, totpCode
 		return "", ErrDenied
 	}
 	if totpSecret.Valid {
-		if !strings.HasPrefix(totpSecret.String, "plaintext:") {
-			opened, oerr := s.openSecret(totpSecret.String)
-			if oerr != nil {
-				// a sealed secret without its key is unusable, fail closed
-				return "", ErrDenied
-			}
-			totpSecret.String = opened
-		} else {
-			// a row written before sealing existed, readable as-is
-			totpSecret.String = strings.TrimPrefix(totpSecret.String, "plaintext:")
+		opened, oerr := s.openSecret(totpSecret.String)
+		if oerr != nil {
+			// a sealed secret without its key is unusable, fail closed
+			return "", ErrDenied
 		}
+		totpSecret.String = opened
 		if totpCode == "" {
 			return "", ErrDenied
 		}

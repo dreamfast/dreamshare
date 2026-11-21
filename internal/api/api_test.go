@@ -574,13 +574,27 @@ func TestManagerInsight(t *testing.T) {
 	if body.Downloads != 0 {
 		t.Fatalf("downloads = %d on a fresh share", body.Downloads)
 	}
+	// a real download event moves the count, this also pins the event
+	// name on both the writer and the reader side
+	if err := rg.store.InsertEvent(t.Context(), shareID, "downloaded", "127.0.0.1", "", "t", 1); err != nil {
+		t.Fatal(err)
+	}
+	resp3 := rg.do("GET", "/api/m/"+mgr+"/insight", nil, nil)
+	var after struct {
+		Downloads int `json:"downloads"`
+	}
+	if err := json.NewDecoder(resp3.Body).Decode(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after.Downloads != 1 {
+		t.Fatalf("downloads after one download = %d, want 1", after.Downloads)
+	}
 	// a wrong token answers the same not found as everywhere else
 	resp2 := rg.do("GET", "/api/m/"+"x"+strings.Repeat("a", 31)+"/insight", nil, nil)
 	_, _ = io.Copy(io.Discard, resp2.Body)
 	if resp2.StatusCode != http.StatusNotFound {
 		t.Fatalf("insight with a bad token: %d", resp2.StatusCode)
 	}
-	_ = shareID
 }
 
 func TestManagerGetNeverRevokes(t *testing.T) {
