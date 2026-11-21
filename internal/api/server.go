@@ -108,6 +108,10 @@ func (s *Server) Handler() http.Handler {
 	// router, so /s/<token>#<key> deep links resolve client side
 	s.mountAdmin(mux)
 
+	// unknown api paths answer the same plain 404 as the admin denies, an
+	// html shell for /api/nothing would be its own kind of oracle and a
+	// lie to json clients besides
+	mux.HandleFunc("/api/", plainNotFound)
 	mux.Handle("/", spaHandler())
 
 	return s.securityHeaders(mux)
@@ -243,6 +247,12 @@ func spaHandler() http.Handler {
 		}
 		http.ServeFileFS(w, r, spaFS, p) // #nosec G703 -- path.Clean through a rooted join leaves no dot dot, and the embed fs cannot escape its root
 	})
+}
+
+func plainNotFound(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte("404 page not found\n"))
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {

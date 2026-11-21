@@ -31,3 +31,12 @@ test('message write and preview modes', async ({ page }) => {
   await page.getByRole('tab', { name: 'Write' }).click()
   await expect(page.locator('#share-message')).toHaveValue('hello **recipient**')
 })
+
+test('the admin route bounces home when the staff area is off', async ({ page }) => {
+  await page.goto('/admin')
+  // identical to the unknown route redirect, no admin surface ever shows
+  await expect(page).toHaveURL(/\/\/?$/)
+  await expect(page.getByRole('button', { name: 'New share' })).toBeVisible()
+  await page.goto('/no-such-page-either')
+  await expect(page).toHaveURL(/\/\/?$/)
+})

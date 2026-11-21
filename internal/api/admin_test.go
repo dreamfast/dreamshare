@@ -386,35 +386,40 @@ func TestAdminSurfaceGatedByIP(t *testing.T) {
 		return resp
 	}
 
-	// the page, the probe and the api all answer the same plain 404 to an
-	// unlisted address, nothing confirms the staff area exists
-	for _, path := range []string{"/admin", "/admin/api/session", "/admin/api/overview"} {
+	// the staff page serves the same app shell to everyone, exactly like
+	// any unknown path, a difference here would itself confirm the area
+	shellPaths := []string{"/admin", "/no-such-page"}
+	var shellBody []byte
+	for _, path := range shellPaths {
+		resp := unlisted(path)
+		body := readAll(t, resp)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d, want the app shell like any other path", path, resp.StatusCode)
+		}
+		if shellBody == nil {
+			shellBody = body
+		} else if !bytes.Equal(shellBody, body) {
+			t.Fatalf("%s body differs from a plain unknown path", path)
+		}
+	}
+
+	// the api surface denies stay byte identical plain 404s, and an
+	// unknown api path answers the same, nothing distinguishes the staff
+	// endpoints from any other missing endpoint
+	for _, path := range []string{"/admin/api/session", "/admin/api/overview", "/admin/api/nothing", "/api/nothing"} {
 		resp := unlisted(path)
 		body := readAll(t, resp)
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusNotFound {
-			t.Fatalf("%s unlisted: %d, want 404", path, resp.StatusCode)
+			t.Fatalf("%s: %d, want 404", path, resp.StatusCode)
 		}
 		if !bytes.Contains(body, []byte("404 page not found")) {
-			t.Fatalf("%s unlisted body confirms the surface: %q", path, body)
+			t.Fatalf("%s body is not the plain denial: %q", path, body)
 		}
 	}
 
-	// an allowlisted address gets the shell, and the probe answers 401
-	// without a session rather than 404, that difference is the login
-	// signal and it is visible only inside the allowlist
-	page, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/admin", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pageResp, perr := http.DefaultClient.Do(page)
-	if perr != nil {
-		t.Fatal(perr)
-	}
-	defer func() { _ = pageResp.Body.Close() }()
-	if pageResp.StatusCode != http.StatusOK {
-		t.Fatalf("listed /admin: %d, want the spa shell", pageResp.StatusCode)
-	}
+	// an allowlisted address still gets the login signal from the probe
 
 	reqS, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, ts.URL+"/admin/api/session", nil)
 	sessResp, serr := http.DefaultClient.Do(reqS)

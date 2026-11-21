@@ -67,30 +67,14 @@ func (s *Server) mountAdmin(mux *http.ServeMux) {
 		}
 	}
 
-	// the shell of the staff area answers the allowlist and nothing else,
-	// an unlisted address gets the same plain 404 as every other admin
-	// route, the surface never confirms its own existence. the session
-	// check deliberately does not run here, the page hosts the login form
-	guardAllowOnly := func(next http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			denyPage := func() {
-				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-				w.WriteHeader(http.StatusNotFound)
-				_, _ = w.Write([]byte("404 page not found\n"))
-			}
-			if s.admin == nil {
-				denyPage()
-				return
-			}
-			ip := net.ParseIP(s.clientIP(r))
-			if ip == nil || !s.adminAllow.Contains(ip) {
-				denyPage()
-				return
-			}
-			next(w, r)
-		}
-	}
-	mux.HandleFunc("GET /admin", guardAllowOnly(spaHandler().ServeHTTP))
+	// the staff page itself is deliberately NOT gated server side: a
+	// naked 404 here would differ from every other unknown path, which
+	// answers with the app shell, and that difference alone would confirm
+	// the area exists. the shell serves /admin to anyone like any path,
+	// and the page bounces client side when the session probe denies it
+	// below. the api denies stay byte identical plain 404s, matching the
+	// unknown api catch-all registered with them
+	mux.HandleFunc("/admin/api/", plainNotFound)
 
 	// the session probe is the one route that may answer 401 to an
 	// allowlisted address without a session: the client needs the
