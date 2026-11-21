@@ -78,6 +78,56 @@ func (s *Server) mountAdmin(mux *http.ServeMux) {
 	mux.HandleFunc("POST /admin/api/blocks", guard(s.handleAdminBlock))
 	mux.HandleFunc("DELETE /admin/api/blocks/{cidr}", guard(s.handleAdminUnblock))
 	mux.HandleFunc("GET /admin/api/health/deep", guard(s.handleAdminDeepHealth))
+	mux.HandleFunc("POST /admin/api/totp/begin", guard(s.handleAdminTOTPBegin))
+	mux.HandleFunc("POST /admin/api/totp/confirm", guard(s.handleAdminTOTPConfirm))
+	mux.HandleFunc("DELETE /admin/api/totp", guard(s.handleAdminTOTPDisable))
+}
+
+func (s *Server) handleAdminTOTPBegin(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email string `json:"email"`
+	}
+	if err := decodeJSON(w, r, 4096, &req); err != nil {
+		return
+	}
+	secret, otpauth, err := s.admin.BeginTOTP(r.Context(), req.Email)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "denied")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"secret": secret, "otpauth": otpauth})
+}
+
+func (s *Server) handleAdminTOTPConfirm(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+		Secret   string `json:"secret"`
+		Code     string `json:"code"`
+	}
+	if err := decodeJSON(w, r, 4096, &req); err != nil {
+		return
+	}
+	if err := s.admin.ConfirmTOTP(r.Context(), req.Email, req.Password, req.Secret, req.Code); err != nil {
+		writeError(w, http.StatusForbidden, "denied")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) handleAdminTOTPDisable(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	if err := decodeJSON(w, r, 4096, &req); err != nil {
+		return
+	}
+	if err := s.admin.DisableTOTP(r.Context(), req.Email, req.Password); err != nil {
+		writeError(w, http.StatusForbidden, "denied")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {

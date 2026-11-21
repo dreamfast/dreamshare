@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pquerna/otp/totp"
+
 	"github.com/dreamfast/dreamshare/internal/storage/sqlite"
 )
 
@@ -172,5 +174,68 @@ func TestSessionIdleExpiry(t *testing.T) {
 	s.nowFunc = func() time.Time { return time.Now().Add(31 * time.Minute) }
 	if s.SessionOK(ctx, tok) {
 		t.Fatal("idle expiry not enforced")
+	}
+}
+
+func TestTOTPEnrolmentRoundTrip(t *testing.T) {
+	svc := openAuth(t)
+	ctx := t.Context()
+	if err := svc.EnsureAdmin(ctx, "admin-1", "root@example.com", "hash:hunter2"); err != nil {
+		t.Fatal(err)
+	}
+
+	if svc.HasTOTP(ctx, "root@example.com") {
+		t.Fatal("fresh admin must not have the factor")
+	}
+	secret, otpauth, err := svc.BeginTOTP(ctx, "root@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secret == "" || otpauth == "" {
+		t.Fatal("begin returned an empty candidate")
+	}
+	// nothing is stored before a live code confirms
+	if svc.HasTOTP(ctx, "root@example.com") {
+		t.Fatal("begin must not enrol by itself")
+	}
+
+	code, cerr := totp.GenerateCode(secret, time.Now())
+	if cerr != nil {
+		t.Fatal(cerr)
+	}
+	if err := svc.ConfirmTOTP(ctx, "root@example.com", "wrongpw", secret, code); err == nil {
+		t.Fatal("confirm with a wrong password must refuse")
+	}
+	if err := svc.ConfirmTOTP(ctx, "root@example.com", "hunter2", secret, "000000"); err == nil {
+		t.Fatal("confirm with a wrong code must refuse")
+	}
+	if err := svc.ConfirmTOTP(ctx, "root@example.com", "hunter2", secret, code); err != nil {
+		t.Fatalf("confirm: %v", err)
+	}
+	if !svc.HasTOTP(ctx, "root@example.com") {
+		t.Fatal("confirm must enrol the factor")
+	}
+
+	// login now demands the code
+	if _, err := svc.Login(ctx, "127.0.0.1", "root@example.com", "hunter2", ""); err == nil {
+		t.Fatal("login without the code must refuse once enrolled")
+	}
+	tok, err := svc.Login(ctx, "127.0.0.1", "root@example.com", "hunter2", code)
+	if err != nil {
+		t.Fatalf("login with the code: %v", err)
+	}
+	if tok == "" {
+		t.Fatal("login returned an empty session token")
+	}
+
+	// disable needs the password again
+	if err := svc.DisableTOTP(ctx, "root@example.com", "wrongpw"); err == nil {
+		t.Fatal("disable with a wrong password must refuse")
+	}
+	if err := svc.DisableTOTP(ctx, "root@example.com", "hunter2"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if svc.HasTOTP(ctx, "root@example.com") {
+		t.Fatal("disable must clear the factor")
 	}
 }

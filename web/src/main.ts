@@ -5,6 +5,7 @@ import Composer from './views/Composer.vue'
 import Sending from './views/Sending.vue'
 import Uploaded from './views/Uploaded.vue'
 import Share from './views/Share.vue'
+import Admin from './views/Admin.vue'
 import Mine from './views/Mine.vue'
 import Terms from './views/Terms.vue'
 import Privacy from './views/Privacy.vue'
@@ -20,6 +21,7 @@ const router = createRouter({
     { path: '/uploaded', component: Uploaded },
     { path: '/s/:token', component: Share },
     { path: '/mine', component: Mine },
+    { path: '/admin', component: Admin },
     { path: '/terms', component: Terms },
     { path: '/privacy', component: Privacy },
     { path: '/:pathMatch(.*)*', redirect: '/' },

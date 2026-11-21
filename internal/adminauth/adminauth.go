@@ -131,6 +131,71 @@ func (s *Service) EnsureAdmin(ctx context.Context, id, email, passwordHash strin
 	return err
 }
 
+// HasTOTP reports whether the second factor is enrolled.
+func (s *Service) HasTOTP(ctx context.Context, email string) bool {
+	var secret sql.NullString
+	err := s.store.Reader.QueryRowContext(ctx,
+		"select totp_secret_ct from admin_users where email = ?", strings.ToLower(email)).Scan(&secret)
+	return err == nil && secret.Valid
+}
+
+// BeginTOTP mints a candidate secret. Nothing is stored until ConfirmTOTP
+// sees a live code from the authenticator, a half finished enrolment
+// cannot lock the admin out.
+func (s *Service) BeginTOTP(ctx context.Context, email string) (secret, otpauth string, err error) {
+	var id string
+	err = s.store.Reader.QueryRowContext(ctx,
+		"select id from admin_users where email = ? and status = 'active'", strings.ToLower(email)).Scan(&id)
+	if err != nil {
+		return "", "", ErrDenied
+	}
+	key, gerr := totp.Generate(totp.GenerateOpts{Issuer: "DreamShare", AccountName: strings.ToLower(email)})
+	if gerr != nil {
+		return "", "", gerr
+	}
+	return key.Secret(), key.URL(), nil
+}
+
+// ConfirmTOTP re-verifies the password, validates a live code against the
+// candidate, then stores it. From here on login demands the factor.
+func (s *Service) ConfirmTOTP(ctx context.Context, email, password, secret, code string) error {
+	var id, passwordHash string
+	err := s.store.Reader.QueryRowContext(ctx,
+		"select id, password_hash from admin_users where email = ? and status = 'active'",
+		strings.ToLower(email)).Scan(&id, &passwordHash)
+	if err != nil {
+		return ErrDenied
+	}
+	if !s.verify(passwordHash, password) {
+		_ = s.checkAndRecord(ctx, email, true, id)
+		return ErrDenied
+	}
+	if !totp.Validate(code, secret) {
+		return ErrDenied
+	}
+	_, err = s.store.Writer.ExecContext(ctx,
+		"update admin_users set totp_secret_ct = ? where id = ?", secret, id)
+	return err
+}
+
+// DisableTOTP clears the factor after a password re-check.
+func (s *Service) DisableTOTP(ctx context.Context, email, password string) error {
+	var id, passwordHash string
+	err := s.store.Reader.QueryRowContext(ctx,
+		"select id, password_hash from admin_users where email = ? and status = 'active'",
+		strings.ToLower(email)).Scan(&id, &passwordHash)
+	if err != nil {
+		return ErrDenied
+	}
+	if !s.verify(passwordHash, password) {
+		_ = s.checkAndRecord(ctx, email, true, id)
+		return ErrDenied
+	}
+	_, err = s.store.Writer.ExecContext(ctx,
+		"update admin_users set totp_secret_ct = null where id = ?", id)
+	return err
+}
+
 // SetPassword replaces the password hash for the single admin user and
 // invalidates every session. The lockout reset path from the server shell.
 func (s *Service) SetPassword(ctx context.Context, email, passwordHash string) error {

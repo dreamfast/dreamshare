@@ -45,9 +45,13 @@ export default tseslint.config(
       'src/views/Terms.vue',
       'src/views/Privacy.vue',
       'src/views/Composer.vue',
+      'src/views/Admin.vue',
     ],
     rules: {
-      'vue/no-v-html': ['error', { ignorePattern: '^(bodyHtml|qrSvg|legalHtml|msgPreviewHtml)$' }],
+      'vue/no-v-html': [
+        'error',
+        { ignorePattern: '^(bodyHtml|qrSvg|legalHtml|msgPreviewHtml|candidateQr)$' },
+      ],
     },
   },
   {
